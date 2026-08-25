@@ -3,18 +3,18 @@ import { createPrompter } from './prompts.js';
 import { createProject } from './scaffold.js';
 import { getTemplateByMap, listTemplates } from './templates.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'];
 
 function printHelp() {
-  console.log(`create-hiy-front ${VERSION}
+  console.log(`create-hiy-starter ${VERSION}
 
 Usage:
-  create-hiy-front [project-name] [options]
+  create-hiy-starter [project-name] [options]
 
 Options:
   --template <react|react-ol>       사용할 템플릿을 직접 선택
-  --map <none|openlayers>           지도 사용 여부로 템플릿 선택
+  --map <none|openlayers>           프론트엔드 지도 사용 여부로 템플릿 선택
   --package-manager <name>          npm | pnpm | yarn | bun
   --skip-install                    의존성 설치 생략
   --git                             Git 저장소 초기화
@@ -25,17 +25,18 @@ Options:
   -h, --help                        도움말 출력
 
 Examples:
-  create-hiy-front
-  create-hiy-front my-app --map none
-  create-hiy-front gis-app --map openlayers --package-manager pnpm
-  create-hiy-front my-app --template react-ol --skip-install
+  create-hiy-starter
+  create-hiy-starter my-app --map none
+  create-hiy-starter gis-app --map openlayers --package-manager pnpm
+  create-hiy-starter my-app --template react-ol --skip-install
 `);
 }
 
 function printTemplates() {
-  console.log('등록된 HIY Front 템플릿:\n');
+  console.log('등록된 HIY Starter 템플릿:\n');
   for (const template of listTemplates()) {
-    console.log(`- ${template.id.padEnd(10)} map=${template.map.padEnd(10)} ${template.repository}`);
+    const kind = template.kind ?? 'frontend';
+    console.log(`- ${template.id.padEnd(10)} kind=${kind.padEnd(8)} map=${template.map.padEnd(10)} ${template.repository}`);
     console.log(`  ${template.description}`);
   }
 }
@@ -72,12 +73,12 @@ export async function runCli(argv) {
   const prompter = createPrompter();
 
   try {
-    const projectName = args.projectName ?? (args.yes ? 'hiy-front-app' : await prompter.text('프로젝트 이름', 'hiy-front-app'));
+    const projectName = args.projectName ?? (args.yes ? 'hiy-app' : await prompter.text('프로젝트 이름', 'hiy-app'));
 
     if (!template) {
       const map = args.yes
         ? 'none'
-        : await prompter.select('지도 기능을 사용하시겠습니까?', mapChoices(), 0);
+        : await prompter.select('프론트엔드 지도 기능을 사용하시겠습니까?', mapChoices(), 0);
       template = getTemplateByMap(map);
     }
 
@@ -93,8 +94,9 @@ export async function runCli(argv) {
 
     const git = args.git ?? (args.yes ? true : await prompter.confirm('새 Git 저장소로 초기화할까요?', true));
 
-    console.log('\nHIY Front 프로젝트를 생성합니다.');
+    console.log('\nHIY Starter 프로젝트를 생성합니다.');
     console.log(`  Project:  ${projectName}`);
+    console.log(`  Kind:     ${template.kind ?? 'frontend'}`);
     console.log(`  Template: ${template.name} (${template.repository})`);
     console.log(`  Map:      ${template.map}`);
     console.log(`  Package:  ${packageManager}`);
