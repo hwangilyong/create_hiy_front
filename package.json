@@ -1,0 +1,28 @@
+{
+  "name": "create-hiy-front",
+  "version": "0.1.0",
+  "description": "Interactive frontend project initializer for HIY React templates",
+  "type": "module",
+  "bin": {
+    "create-hiy-front": "./bin/create-hiy-front.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "react",
+    "vite",
+    "openlayers",
+    "starter",
+    "scaffold",
+    "cli"
+  ]
+}
