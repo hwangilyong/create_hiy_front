@@ -2,13 +2,18 @@
 
 ## 목적
 
-이 저장소는 여러 프론트엔드 초기 템플릿을 선택해 새 프로젝트를 생성하는 CLI입니다.
+이 저장소는 HIY 프로젝트 초기 템플릿을 선택해 새 프로젝트를 생성하는 범용 Starter CLI입니다.
+
+현재는 프론트엔드 템플릿을 제공하며, 향후 서버/백엔드 템플릿도 동일한 Registry 구조로 확장합니다.
 
 ## 핵심 규칙
 
 - 템플릿 선택 정보는 `src/templates.js`에서만 관리합니다.
+- 템플릿은 `kind`로 상위 분류합니다. 현재 값은 `frontend`이며, 서버 템플릿은 `backend`를 사용합니다.
 - 특정 템플릿 Repository 이름을 `cli.js` 또는 `scaffold.js`에 하드코딩하지 않습니다.
+- `map`은 프론트엔드 템플릿의 지도 엔진 구분에만 사용합니다.
 - 지도 종류 추가 시 먼저 Registry에 새 항목을 추가하고 기존 선택 흐름을 재사용합니다.
+- 백엔드 템플릿 추가 시 프론트엔드 전용 옵션을 강제하지 않고 `kind` 기준의 선택 단계를 확장합니다.
 - 생성된 프로젝트에는 원본 템플릿의 `.git` 디렉터리를 복사하지 않습니다.
 - GitHub token, PAT, SSH key 등 인증정보를 코드나 설정파일에 저장하지 않습니다.
 - private 템플릿 접근은 사용자의 `gh` 또는 Git credential 설정을 그대로 사용합니다.
@@ -19,13 +24,20 @@
 
 ```bash
 npm test
-node ./bin/create-hiy-front.js --help
-node ./bin/create-hiy-front.js --list
+node ./bin/create-hiy-starter.js --help
+node ./bin/create-hiy-starter.js --list
 ```
 
-새 템플릿을 추가했다면 다음도 확인합니다.
+새 프론트엔드 템플릿을 추가했다면 다음도 확인합니다.
 
 - `--template <id>`로 선택 가능
-- `--map <map>`으로 선택 가능
+- 지도 템플릿이면 `--map <map>`으로 선택 가능
 - 대화형 지도 선택 목록에 자동 노출
 - README의 템플릿 목록과 예시 갱신
+
+새 백엔드 템플릿을 추가할 때는 다음 원칙을 따릅니다.
+
+- `kind: 'backend'`로 등록
+- 서버 런타임/프레임워크별 메타데이터는 Registry에 둠
+- 프론트엔드 전용 `map` 옵션에 의존하지 않음
+- 실행/빌드 명령이 프론트엔드와 다르면 템플릿 메타데이터로 표현하도록 CLI를 확장
