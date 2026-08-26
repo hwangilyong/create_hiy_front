@@ -1,155 +1,167 @@
 # create_hiy_starter
 
-`create_hiy_starter`는 HIY 프로젝트 초기 템플릿을 선택해서 새 프로젝트를 만들어주는 범용 Starter CLI입니다.
+`create_hiy_starter`는 HIY 프로젝트 초기 템플릿을 선택해서 새 프로젝트를 만드는 범용 Starter CLI입니다.
 
-현재는 프론트엔드 템플릿을 제공하고, 향후 Spring Boot/Kotlin 등 서버 템플릿도 같은 Registry에 추가할 수 있도록 확장 구조를 준비합니다.
+현재는 프론트엔드 템플릿을 제공하며, 향후 Spring Boot/Kotlin 등 서버 템플릿도 같은 Registry에 추가할 수 있도록 설계합니다.
 
-## 현재 템플릿
+## 현재 stable 템플릿
 
-| Kind | 선택 | 템플릿 | 용도 |
+| Kind | ID | Stable | Repository |
 | --- | --- | --- | --- |
-| frontend | 지도 사용 안 함 | `hwangilyong/react_init_agent` | React 19 + Vite + TypeScript + FSD 기반 일반 프론트엔드 |
-| frontend | OpenLayers | `hwangilyong/react_ol_init` | React + OpenLayers Controller/Event/Layer 아키텍처 기반 GIS 프론트엔드 |
+| frontend | `react` | `0.1.0` | `hwangilyong/react_init_agent` |
+| frontend | `react-ol` | `0.2.0` | `hwangilyong/react_ol_init` |
+
+기본 생성은 `main`이 아니라 Registry에 지정된 stable tag를 사용합니다.
+
+```text
+react      -> v0.1.0
+react-ol   -> v0.2.0
+```
+
+따라서 템플릿 저장소의 `main`이 변경되어도 이미 생성된 프로젝트와 새 프로젝트의 stable 기준이 임의로 바뀌지 않습니다.
 
 ## 바로 실행
-
-npm에 게시하기 전에는 GitHub 저장소를 직접 `npx`로 실행할 수 있습니다.
 
 ```bash
 npx github:hwangilyong/create_hiy_starter
 ```
 
-대화형으로 실행하면 현재 프론트엔드 템플릿 기준으로 다음 항목을 선택합니다.
+## 버전 선택
 
-```text
-프로젝트 이름: hiy-app
-
-프론트엔드 지도 기능을 사용하시겠습니까?
-  1) 지도 사용 안 함 - React 일반 템플릿
-  2) OpenLayers - React + OpenLayers 템플릿
-
-Package manager를 선택해주세요.
-  1) npm
-  2) pnpm
-  3) yarn
-  4) bun
-
-의존성을 지금 설치할까요? (Y/n)
-새 Git 저장소로 초기화할까요? (Y/n)
-```
-
-선택 결과는 다음처럼 연결됩니다.
-
-```text
-kind = frontend
-
-Map = none
-  -> hwangilyong/react_init_agent
-
-Map = openlayers
-  -> hwangilyong/react_ol_init
-```
-
-## 명령형 사용
+버전을 생략하면 해당 템플릿의 stable 버전을 사용합니다.
 
 ```bash
-# 일반 React
-npx github:hwangilyong/create_hiy_starter my-app --map none
+# 최신 stable React Starter
+npx github:hwangilyong/create_hiy_starter my-app --template react
 
-# React + OpenLayers
-npx github:hwangilyong/create_hiy_starter gis-app --map openlayers
+# 특정 버전 고정
+npx github:hwangilyong/create_hiy_starter my-app --template react@0.1.0
 
-# 템플릿 ID 직접 선택
+# 동일한 표현
+npx github:hwangilyong/create_hiy_starter my-app \
+  --template react \
+  --template-version 0.1.0
+
+# OpenLayers stable
 npx github:hwangilyong/create_hiy_starter gis-app --template react-ol
-
-# pnpm 사용 + 설치는 나중에
-npx github:hwangilyong/create_hiy_starter gis-app \
-  --map openlayers \
-  --package-manager pnpm \
-  --skip-install
-
-# Git 초기화 생략
-npx github:hwangilyong/create_hiy_starter my-app --no-git
 ```
 
-등록된 템플릿 확인:
+등록된 템플릿과 stable/지원 버전은 다음 명령으로 확인합니다.
 
 ```bash
 npx github:hwangilyong/create_hiy_starter --list
 ```
 
-## 옵션
-
-```text
---template <react|react-ol>       사용할 템플릿을 직접 선택
---map <none|openlayers>           프론트엔드 지도 사용 여부로 템플릿 선택
---package-manager <name>          npm | pnpm | yarn | bun
---skip-install                    의존성 설치 생략
---git                             Git 저장소 초기화
---no-git                          Git 저장소 초기화 생략
--y, --yes                         질문 없이 기본값 사용
---list                            등록된 템플릿 목록 출력
--v, --version                     버전 출력
--h, --help                        도움말 출력
-```
-
-`--yes` 기본값:
-
-- 프로젝트 이름: `hiy-app`
-- 템플릿: `react`
-- 지도: 사용 안 함
-- package manager: `npm`
-- 의존성 설치: 수행
-- Git 초기화: 수행
-
-## Private 템플릿 인증
-
-연결된 템플릿 저장소가 private이면 해당 저장소에 접근할 수 있는 GitHub 인증이 필요합니다.
-
-CLI는 우선 GitHub CLI(`gh`)를 사용하고, 사용할 수 없으면 HTTPS `git clone`을 시도합니다.
+## 지도 기준 선택
 
 ```bash
-gh auth login
-gh auth status
+# 일반 React stable
+npx github:hwangilyong/create_hiy_starter my-app --map none
+
+# React + OpenLayers stable
+npx github:hwangilyong/create_hiy_starter gis-app --map openlayers
 ```
 
-인증 정보나 토큰은 이 저장소에 저장하지 않습니다.
-
-## 프로젝트 생성 과정
+## 주요 옵션
 
 ```text
-create_hiy_starter
-  -> 템플릿 선택
-  -> GitHub에서 템플릿 shallow clone
-  -> .git 제거
-  -> 새 프로젝트 폴더로 복사
-  -> package.json name 재설정
-  -> 기존 lockfile 제거
-  -> .env.example이 있으면 .env.local 생성
-  -> 선택한 package manager로 install
-  -> 선택 시 git init
+--template <id[@version]>          템플릿과 특정 버전 선택
+--template-version <version>       템플릿 버전 직접 선택
+--map <none|openlayers>            프론트엔드 지도 설정
+--package-manager <name>           npm | pnpm | yarn | bun
+--skip-install                     의존성 설치 생략
+--git                              Git 저장소 초기화
+--no-git                           Git 저장소 초기화 생략
+-y, --yes                          질문 없이 기본값 사용
+--list                             등록된 템플릿/버전 목록 출력
+-v, --version                      create-hiy-starter CLI 버전 출력
+-h, --help                         도움말 출력
 ```
 
-템플릿의 기존 Git history는 새 프로젝트로 복사되지 않습니다.
+## 생성 프로젝트의 버전 추적
+
+생성된 프로젝트 루트에는 `.hiy-starter.json`이 만들어집니다.
+
+```json
+{
+  "schemaVersion": 1,
+  "starter": "create-hiy-starter",
+  "template": {
+    "id": "react-ol",
+    "kind": "frontend",
+    "version": "0.2.0",
+    "repository": "hwangilyong/react_ol_init",
+    "ref": "v0.2.0",
+    "channel": "stable"
+  }
+}
+```
+
+이 파일은 향후 `check-update`, migration 등 템플릿 업데이트 도구의 기준으로 사용할 수 있습니다.
 
 ## 템플릿 Registry
 
-템플릿 정의는 `src/templates.js` 한 곳에서 관리합니다.
+버전 정보는 `src/templates.js`에서 관리합니다.
 
 ```js
 {
   id: 'react-ol',
   kind: 'frontend',
   name: 'React + OpenLayers Starter',
-  map: 'openlayers',
   repository: 'hwangilyong/react_ol_init',
-  ref: 'main'
+  stable: '0.2.0',
+  versions: [
+    { version: '0.2.0', ref: 'v0.2.0', channel: 'stable' }
+  ]
 }
 ```
 
-프론트엔드 지도 템플릿은 `kind: 'frontend'`와 `map` 조합으로 구분합니다.
+새 템플릿 버전을 발행할 때는 기존 버전을 제거하지 않고 `versions`에 추가한 뒤, 검증이 끝난 버전만 `stable` 값을 변경합니다.
 
-향후 서버 템플릿은 다음처럼 확장할 수 있습니다.
+예:
+
+```js
+stable: '0.3.0',
+versions: [
+  { version: '0.2.0', ref: 'v0.2.0', channel: 'legacy' },
+  { version: '0.3.0', ref: 'v0.3.0', channel: 'stable' }
+]
+```
+
+## 템플릿 릴리스 정책
+
+각 템플릿 저장소는 Semantic Versioning을 사용합니다.
+
+```text
+PATCH  설정/버그 수정
+MINOR  호환 가능한 기능 추가
+MAJOR  프로젝트 구조/사용 규약의 호환성 파괴 변경
+```
+
+템플릿 저장소에서는 다음 값이 일치해야 합니다.
+
+```text
+package.json version
+=
+hiy-template.json version
+=
+Git tag vX.Y.Z
+```
+
+`main`은 개발용이며 Starter Registry에서 직접 참조하지 않습니다.
+
+## Private 템플릿 인증
+
+private 저장소 접근 시 GitHub 인증이 필요합니다.
+
+```bash
+gh auth login
+gh auth status
+```
+
+CLI는 `gh repo clone`을 먼저 사용하고 실패 시 HTTPS `git clone`을 시도합니다.
+
+## 향후 Backend 확장
 
 ```js
 {
@@ -157,31 +169,14 @@ create_hiy_starter
   kind: 'backend',
   name: 'Spring Boot + Kotlin Starter',
   repository: 'hwangilyong/spring_kotlin_init',
-  ref: 'main'
+  stable: '1.0.0',
+  versions: [
+    { version: '1.0.0', ref: 'v1.0.0', channel: 'stable' }
+  ]
 }
 ```
 
-백엔드 템플릿이 실제로 추가되면 CLI의 첫 선택 단계를 다음처럼 확장하는 방향입니다.
-
-```text
-어떤 프로젝트를 생성하시겠습니까?
-  1) Frontend
-  2) Backend
-
-Frontend
-  -> React
-  -> React + OpenLayers
-
-Backend
-  -> Spring Boot + Kotlin
-  -> 기타 서버 템플릿
-```
-
-즉 저장소 이름과 CLI를 프론트엔드 전용으로 제한하지 않고 하나의 HIY Starter Marketplace 진입점으로 사용합니다.
-
 ## 개발
-
-Node.js 20 이상이 필요합니다.
 
 ```bash
 npm test
@@ -189,10 +184,4 @@ node ./bin/create-hiy-starter.js --help
 node ./bin/create-hiy-starter.js --list
 ```
 
-## npm 게시 후
-
-npm에 `create-hiy-starter` 이름으로 게시하면 다음처럼 사용할 수 있습니다.
-
-```bash
-npx create-hiy-starter
-```
+Node.js 20 이상이 필요합니다.
