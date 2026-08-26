@@ -4,6 +4,6 @@ import { runCli } from '../src/cli.js';
 
 runCli(process.argv.slice(2)).catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`\ncreate-hiy-front error: ${message}`);
+  console.error(`\ncreate-hiy-starter error: ${message}`);
   process.exitCode = 1;
 });

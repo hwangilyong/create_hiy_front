@@ -28,5 +28,5 @@ jobs:
 
       - name: Smoke test CLI
         run: |
-          node ./bin/create-hiy-front.js --help
-          node ./bin/create-hiy-front.js --list
+          node ./bin/create-hiy-starter.js --help
+          node ./bin/create-hiy-starter.js --list
