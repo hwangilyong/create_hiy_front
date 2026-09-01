@@ -10,6 +10,7 @@ test('parses direct OpenLayers project options', () => {
     'openlayers',
     '--package-manager',
     'pnpm',
+    '--storybook-ai-review',
     '--skip-install',
     '--no-git',
   ]);
@@ -17,8 +18,14 @@ test('parses direct OpenLayers project options', () => {
   assert.equal(args.projectName, 'gis-app');
   assert.equal(args.map, 'openlayers');
   assert.equal(args.packageManager, 'pnpm');
+  assert.equal(args.storybookAiReview, true);
   assert.equal(args.skipInstall, true);
   assert.equal(args.git, false);
+});
+
+test('can explicitly disable Storybook AI review', () => {
+  const args = parseArgs(['app', '--no-storybook-ai-review']);
+  assert.equal(args.storybookAiReview, false);
 });
 
 test('resolves no-map projects to the general React starter', () => {
