@@ -169,12 +169,14 @@ function normalizePayload(value) {
   if (!path.isAbsolute(rawProjectRoot)) {
     throw new HttpError(400, "projectRoot must be an absolute path when provided");
   }
-  if (path.isAbsolute(rawTargetFile)) {
-    throw new HttpError(400, "targetFile must be relative to projectRoot");
-  }
 
   const projectRoot = path.normalize(rawProjectRoot);
-  const absoluteTargetFile = path.resolve(projectRoot, rawTargetFile);
+  // targetFile may be relative to projectRoot, or an absolute path (e.g. the
+  // addon's DOM-to-source lookup sends React's `_debugSource.fileName`,
+  // which is always absolute). Either way it must resolve inside projectRoot.
+  const absoluteTargetFile = path.isAbsolute(rawTargetFile)
+    ? path.normalize(rawTargetFile)
+    : path.resolve(projectRoot, rawTargetFile);
   if (!isPathInside(projectRoot, absoluteTargetFile)) {
     throw new HttpError(400, "targetFile must resolve to a file inside projectRoot");
   }
@@ -195,6 +197,9 @@ function normalizePayload(value) {
     if (target.rect !== undefined && !isRecord(target.rect)) {
       throw new HttpError(400, `comments[${index}].target.rect must be an object`);
     }
+    if (target.source !== undefined && target.source !== null && !isRecord(target.source)) {
+      throw new HttpError(400, `comments[${index}].target.source must be an object or null`);
+    }
 
     return {
       id: typeof comment.id === "string" ? comment.id : null,
@@ -208,6 +213,9 @@ function normalizePayload(value) {
         text: typeof target.text === "string" ? target.text : null,
         attributes: target.attributes ?? {},
         rect: target.rect ?? {},
+        lineNumber: isRecord(target.source) && typeof target.source.lineNumber === "number"
+          ? target.source.lineNumber
+          : null,
       },
     };
   });
@@ -240,6 +248,7 @@ function buildPrompt(payload) {
 - targetFile: ${payload.targetFile}
 - target.selector: ${displayValue(comment.target.selector)}
 - target.tagName: ${displayValue(comment.target.tagName)}
+- target.lineNumber: ${displayValue(comment.target.lineNumber)}
 - target.text: ${displayValue(comment.target.text)}
 - target.attributes: ${JSON.stringify(comment.target.attributes)}
 - target.rect: ${JSON.stringify(comment.target.rect)}`,
