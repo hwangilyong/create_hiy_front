@@ -12,7 +12,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const AI_BRIDGE_TEMPLATE_DIR = path.join(MODULE_DIR, '..', 'templates', 'ai-bridge');
 
 const LOCK_FILES = [
   'package-lock.json',
@@ -136,7 +140,12 @@ function normalizeGeneratedProject(targetDir) {
   for (const lockFile of LOCK_FILES) {
     removeIfExists(path.join(targetDir, lockFile));
   }
+}
 
+// Must run after configureStorybookAiReview, which can still be appending to
+// .env.example, so .env.local ends up with the same content the developer
+// will actually see in .env.example (e.g. VITE_HIY_AI_REVIEW_ENDPOINT).
+function syncEnvLocal(targetDir) {
   const envExample = path.join(targetDir, '.env.example');
   const envLocal = path.join(targetDir, '.env.local');
   if (existsSync(envExample) && !existsSync(envLocal)) {
@@ -155,6 +164,7 @@ function configureStorybookAiReview(targetDir) {
     ...(packageJson.scripts ?? {}),
     storybook: 'storybook dev -p 6006',
     'build-storybook': 'storybook build',
+    'ai-bridge': 'node tools/ai-bridge/server.mjs',
   };
   packageJson.devDependencies = {
     ...(packageJson.devDependencies ?? {}),
@@ -181,8 +191,23 @@ function configureStorybookAiReview(targetDir) {
   const existingEnv = existsSync(envExamplePath) ? readFileSync(envExamplePath, 'utf8') : '';
   if (!existingEnv.includes('VITE_HIY_AI_REVIEW_ENDPOINT=')) {
     const prefix = existingEnv && !existingEnv.endsWith('\n') ? '\n' : '';
-    writeFileSync(envExamplePath, `${existingEnv}${prefix}VITE_HIY_AI_REVIEW_ENDPOINT=\n`);
+    writeFileSync(
+      envExamplePath,
+      `${existingEnv}${prefix}VITE_HIY_AI_REVIEW_ENDPOINT=http://127.0.0.1:4700/review\n`,
+    );
   }
+
+  injectAiBridge(targetDir);
+}
+
+function injectAiBridge(targetDir) {
+  if (!existsSync(AI_BRIDGE_TEMPLATE_DIR)) {
+    throw new Error(`ai-bridge 템플릿을 찾을 수 없습니다: ${AI_BRIDGE_TEMPLATE_DIR}`);
+  }
+
+  const aiBridgeDir = path.join(targetDir, 'tools', 'ai-bridge');
+  mkdirSync(aiBridgeDir, { recursive: true });
+  cpSync(AI_BRIDGE_TEMPLATE_DIR, aiBridgeDir, { recursive: true });
 }
 
 function initializeGit(targetDir, warnings) {
@@ -243,6 +268,7 @@ export function createProject({
     if (storybookAiReview) {
       configureStorybookAiReview(targetDir);
     }
+    syncEnvLocal(targetDir);
 
     if (install) {
       installDependencies(targetDir, packageManager, warnings);
