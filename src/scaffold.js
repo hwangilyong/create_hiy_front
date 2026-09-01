@@ -142,9 +142,6 @@ function normalizeGeneratedProject(targetDir) {
   }
 }
 
-// Must run after configureStorybookAiReview, which can still be appending to
-// .env.example, so .env.local ends up with the same content the developer
-// will actually see in .env.example (e.g. VITE_HIY_AI_REVIEW_ENDPOINT).
 function syncEnvLocal(targetDir) {
   const envExample = path.join(targetDir, '.env.example');
   const envLocal = path.join(targetDir, '.env.local');
@@ -170,6 +167,7 @@ function configureStorybookAiReview(targetDir) {
     ...(packageJson.devDependencies ?? {}),
     '@hiy/storybook-addon-ai-review': 'github:hwangilyong/storybook_addon#main',
     '@storybook/react-vite': 'latest',
+    'better-sqlite3': '^12.2.0',
     storybook: 'latest',
   };
   writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
@@ -195,6 +193,13 @@ function configureStorybookAiReview(targetDir) {
       envExamplePath,
       `${existingEnv}${prefix}VITE_HIY_AI_REVIEW_ENDPOINT=http://127.0.0.1:4700/review\n`,
     );
+  }
+
+  const gitignorePath = path.join(targetDir, '.gitignore');
+  const existingGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
+  if (!existingGitignore.split(/\r?\n/).includes('.hiy-ai-review/')) {
+    const prefix = existingGitignore && !existingGitignore.endsWith('\n') ? '\n' : '';
+    writeFileSync(gitignorePath, `${existingGitignore}${prefix}.hiy-ai-review/\n`);
   }
 
   injectAiBridge(targetDir);
