@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,11 +9,8 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4700;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
+const HISTORY_DIRECTORY_NAME = ".hiy-ai-review/history";
 
-// This file is bundled at <project>/tools/ai-bridge/server.mjs, so the
-// project root is two directories up from here. Requests may still send an
-// explicit "projectRoot" to target a different checkout; when omitted, this
-// bundled default is used.
 const BUNDLED_PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const host = process.env.AI_BRIDGE_HOST || DEFAULT_HOST;
@@ -21,18 +19,16 @@ const executeEnabled = process.env.AI_BRIDGE_EXECUTE === "1";
 const commandTemplate = parseCommandTemplate(process.env.AI_EDIT_COMMAND);
 
 class HttpError extends Error {
-  constructor(statusCode, message) {
+  constructor(statusCode, message, details = null) {
     super(message);
     this.name = "HttpError";
     this.statusCode = statusCode;
+    this.details = details;
   }
 }
 
 function parsePort(value) {
-  if (value === undefined || value === "") {
-    return DEFAULT_PORT;
-  }
-
+  if (value === undefined || value === "") return DEFAULT_PORT;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
     throw new Error("AI_BRIDGE_PORT must be an integer between 1 and 65535");
@@ -41,10 +37,7 @@ function parsePort(value) {
 }
 
 function parseCommandTemplate(rawCommand) {
-  if (rawCommand === undefined || rawCommand.trim() === "") {
-    return null;
-  }
-
+  if (rawCommand === undefined || rawCommand.trim() === "") return null;
   const trimmed = rawCommand.trim();
   let tokens;
 
@@ -54,7 +47,6 @@ function parseCommandTemplate(rawCommand) {
     } catch (error) {
       throw new Error(`AI_EDIT_COMMAND is not valid JSON: ${error.message}`);
     }
-
     if (!Array.isArray(tokens) || tokens.some((token) => typeof token !== "string")) {
       throw new Error("AI_EDIT_COMMAND JSON form must be an array of strings");
     }
@@ -65,7 +57,6 @@ function parseCommandTemplate(rawCommand) {
   if (tokens.length === 0 || tokens[0].length === 0) {
     throw new Error("AI_EDIT_COMMAND must contain an executable");
   }
-
   return tokens;
 }
 
@@ -83,29 +74,22 @@ function splitCommand(command) {
       escaped = false;
       continue;
     }
-
     if (character === "\\") {
       escaped = true;
       tokenStarted = true;
       continue;
     }
-
     if (quote !== null) {
-      if (character === quote) {
-        quote = null;
-      } else {
-        token += character;
-      }
+      if (character === quote) quote = null;
+      else token += character;
       tokenStarted = true;
       continue;
     }
-
     if (character === "'" || character === '"') {
       quote = character;
       tokenStarted = true;
       continue;
     }
-
     if (/\s/.test(character)) {
       if (tokenStarted) {
         tokens.push(token);
@@ -114,21 +98,13 @@ function splitCommand(command) {
       }
       continue;
     }
-
     token += character;
     tokenStarted = true;
   }
 
-  if (escaped) {
-    throw new Error("AI_EDIT_COMMAND cannot end with an unescaped backslash");
-  }
-  if (quote !== null) {
-    throw new Error("AI_EDIT_COMMAND contains an unterminated quote");
-  }
-  if (tokenStarted) {
-    tokens.push(token);
-  }
-
+  if (escaped) throw new Error("AI_EDIT_COMMAND cannot end with an unescaped backslash");
+  if (quote !== null) throw new Error("AI_EDIT_COMMAND contains an unterminated quote");
+  if (tokenStarted) tokens.push(token);
   return tokens;
 }
 
@@ -145,25 +121,16 @@ function requireNonEmptyString(value, fieldName) {
 
 function isPathInside(parentPath, candidatePath) {
   const relativePath = path.relative(parentPath, candidatePath);
-  return (
-    relativePath !== "" &&
-    relativePath !== ".." &&
-    !relativePath.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relativePath)
-  );
+  return relativePath !== "" && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath);
 }
 
 function normalizePayload(value) {
-  if (!isRecord(value)) {
-    throw new HttpError(400, "request body must be a JSON object");
-  }
+  if (!isRecord(value)) throw new HttpError(400, "request body must be a JSON object");
 
   const storyId = requireNonEmptyString(value.storyId, "storyId");
-
-  const rawProjectRoot =
-    typeof value.projectRoot === "string" && value.projectRoot.trim() !== ""
-      ? value.projectRoot.trim()
-      : BUNDLED_PROJECT_ROOT;
+  const rawProjectRoot = typeof value.projectRoot === "string" && value.projectRoot.trim() !== ""
+    ? value.projectRoot.trim()
+    : BUNDLED_PROJECT_ROOT;
   const rawTargetFile = requireNonEmptyString(value.targetFile, "targetFile");
 
   if (!path.isAbsolute(rawProjectRoot)) {
@@ -171,25 +138,19 @@ function normalizePayload(value) {
   }
 
   const projectRoot = path.normalize(rawProjectRoot);
-  // targetFile may be relative to projectRoot, or an absolute path (e.g. the
-  // addon's DOM-to-source lookup sends React's `_debugSource.fileName`,
-  // which is always absolute). Either way it must resolve inside projectRoot.
   const absoluteTargetFile = path.isAbsolute(rawTargetFile)
     ? path.normalize(rawTargetFile)
     : path.resolve(projectRoot, rawTargetFile);
+
   if (!isPathInside(projectRoot, absoluteTargetFile)) {
     throw new HttpError(400, "targetFile must resolve to a file inside projectRoot");
   }
-
   if (!Array.isArray(value.comments) || value.comments.length === 0) {
     throw new HttpError(400, "comments must be a non-empty array");
   }
 
   const comments = value.comments.map((comment, index) => {
-    if (!isRecord(comment)) {
-      throw new HttpError(400, `comments[${index}] must be an object`);
-    }
-
+    if (!isRecord(comment)) throw new HttpError(400, `comments[${index}] must be an object`);
     const target = isRecord(comment.target) ? comment.target : {};
     if (target.attributes !== undefined && !isRecord(target.attributes)) {
       throw new HttpError(400, `comments[${index}].target.attributes must be an object`);
@@ -213,9 +174,7 @@ function normalizePayload(value) {
         text: typeof target.text === "string" ? target.text : null,
         attributes: target.attributes ?? {},
         rect: target.rect ?? {},
-        lineNumber: isRecord(target.source) && typeof target.source.lineNumber === "number"
-          ? target.source.lineNumber
-          : null,
+        lineNumber: isRecord(target.source) && typeof target.source.lineNumber === "number" ? target.source.lineNumber : null,
       },
     };
   });
@@ -231,16 +190,12 @@ function normalizePayload(value) {
 }
 
 function displayValue(value) {
-  if (value === null || value === "") {
-    return "(not provided)";
-  }
+  if (value === null || value === "") return "(not provided)";
   return String(value);
 }
 
 function buildPrompt(payload) {
-  const comments = payload.comments
-    .map(
-      (comment, index) => `Comment ${index + 1}
+  const comments = payload.comments.map((comment, index) => `Comment ${index + 1}
 - id: ${displayValue(comment.id)}
 - storyId: ${displayValue(comment.storyId)}
 - createdAt: ${displayValue(comment.createdAt)}
@@ -251,9 +206,7 @@ function buildPrompt(payload) {
 - target.lineNumber: ${displayValue(comment.target.lineNumber)}
 - target.text: ${displayValue(comment.target.text)}
 - target.attributes: ${JSON.stringify(comment.target.attributes)}
-- target.rect: ${JSON.stringify(comment.target.rect)}`,
-    )
-    .join("\n\n");
+- target.rect: ${JSON.stringify(comment.target.rect)}`).join("\n\n");
 
   return `You are applying Storybook visual review comments to a local source file.
 
@@ -282,22 +235,10 @@ function replacePlaceholder(value, placeholder, replacement) {
 
 function createExecutionPlan(template, cwd, prompt) {
   if (template === null) {
-    return {
-      configured: false,
-      cwd,
-      executable: null,
-      args: [],
-      promptDelivery: null,
-      preview: "AI_EDIT_COMMAND is not configured",
-    };
+    return { configured: false, cwd, executable: null, args: [], promptDelivery: null, preview: "AI_EDIT_COMMAND is not configured" };
   }
-
   const hasPromptPlaceholder = template.some((token) => token.includes("{prompt}"));
-  const tokens = template.map((token) => {
-    const withCwd = replacePlaceholder(token, "{cwd}", cwd);
-    return replacePlaceholder(withCwd, "{prompt}", prompt);
-  });
-
+  const tokens = template.map((token) => replacePlaceholder(replacePlaceholder(token, "{cwd}", cwd), "{prompt}", prompt));
   return {
     configured: true,
     cwd,
@@ -310,48 +251,92 @@ function createExecutionPlan(template, cwd, prompt) {
 
 async function validateExecutionTarget(payload) {
   let rootStats;
-  try {
-    rootStats = await stat(payload.projectRoot);
-  } catch {
-    throw new HttpError(400, "projectRoot does not exist or is not accessible");
-  }
-  if (!rootStats.isDirectory()) {
-    throw new HttpError(400, "projectRoot must point to a directory");
-  }
+  try { rootStats = await stat(payload.projectRoot); }
+  catch { throw new HttpError(400, "projectRoot does not exist or is not accessible"); }
+  if (!rootStats.isDirectory()) throw new HttpError(400, "projectRoot must point to a directory");
 
   let targetStats;
-  try {
-    targetStats = await stat(payload.absoluteTargetFile);
-  } catch {
-    throw new HttpError(400, "targetFile does not exist or is not accessible");
+  try { targetStats = await stat(payload.absoluteTargetFile); }
+  catch {
+    throw new HttpError(400, "targetFile does not exist or is not accessible", {
+      projectRoot: payload.projectRoot,
+      targetFile: payload.targetFile,
+      absoluteTargetFile: payload.absoluteTargetFile,
+    });
   }
-  if (!targetStats.isFile()) {
-    throw new HttpError(400, "targetFile must point to a regular file");
-  }
+  if (!targetStats.isFile()) throw new HttpError(400, "targetFile must point to a regular file");
 
-  const [realProjectRoot, realTargetFile] = await Promise.all([
-    realpath(payload.projectRoot),
-    realpath(payload.absoluteTargetFile),
-  ]);
+  const [realProjectRoot, realTargetFile] = await Promise.all([realpath(payload.projectRoot), realpath(payload.absoluteTargetFile)]);
   if (!isPathInside(realProjectRoot, realTargetFile)) {
     throw new HttpError(400, "targetFile resolves outside projectRoot through a symbolic link");
   }
+  return { realProjectRoot, realTargetFile };
+}
 
-  return realProjectRoot;
+function historyDirectory(projectRoot) {
+  return path.join(projectRoot, HISTORY_DIRECTORY_NAME);
+}
+
+function historyFile(projectRoot, historyId) {
+  if (!/^[a-f0-9-]{36}$/i.test(historyId)) throw new HttpError(400, "historyId is invalid");
+  return path.join(historyDirectory(projectRoot), `${historyId}.json`);
+}
+
+async function saveHistoryEntry(entry) {
+  const directory = historyDirectory(entry.projectRoot);
+  await mkdir(directory, { recursive: true });
+  await writeFile(historyFile(entry.projectRoot, entry.id), `${JSON.stringify(entry, null, 2)}\n`, "utf8");
+}
+
+async function readHistoryEntry(projectRoot, historyId) {
+  try {
+    return JSON.parse(await readFile(historyFile(projectRoot, historyId), "utf8"));
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(404, "History entry not found");
+  }
+}
+
+function historySummary(entry) {
+  return {
+    id: entry.id,
+    createdAt: entry.createdAt,
+    storyId: entry.storyId,
+    targetFile: entry.targetFile,
+    status: entry.status,
+    commentCount: Array.isArray(entry.comments) ? entry.comments.length : 0,
+    comments: Array.isArray(entry.comments) ? entry.comments.map((item) => item.comment) : [],
+    rollbackAvailable: typeof entry.beforeContent === "string",
+    rolledBackAt: entry.rolledBackAt ?? null,
+  };
+}
+
+async function listHistory(projectRoot) {
+  const directory = historyDirectory(projectRoot);
+  let names;
+  try { names = await readdir(directory); }
+  catch { return []; }
+
+  const entries = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const entry = JSON.parse(await readFile(path.join(directory, name), "utf8"));
+      entries.push(historySummary(entry));
+    } catch {
+      // Ignore incomplete/corrupt history files instead of breaking the panel.
+    }
+  }
+  return entries.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
 function createOutputCapture() {
   let capturedBytes = 0;
   let truncated = false;
   const chunks = [];
-
   return {
     append(chunk) {
-      if (capturedBytes >= MAX_CAPTURE_BYTES) {
-        truncated = true;
-        return;
-      }
-
+      if (capturedBytes >= MAX_CAPTURE_BYTES) { truncated = true; return; }
       const remainingBytes = MAX_CAPTURE_BYTES - capturedBytes;
       if (chunk.length > remainingBytes) {
         chunks.push(chunk.subarray(0, remainingBytes));
@@ -359,7 +344,6 @@ function createOutputCapture() {
         truncated = true;
         return;
       }
-
       chunks.push(chunk);
       capturedBytes += chunk.length;
     },
@@ -367,9 +351,7 @@ function createOutputCapture() {
       const output = Buffer.concat(chunks).toString("utf8");
       return truncated ? `${output}\n[output truncated by ai-bridge]` : output;
     },
-    get truncated() {
-      return truncated;
-    },
+    get truncated() { return truncated; },
   };
 }
 
@@ -379,7 +361,6 @@ function runCommand(plan, prompt) {
     const stdout = createOutputCapture();
     const stderr = createOutputCapture();
     let settled = false;
-
     const child = spawn(plan.executable, plan.args, {
       cwd: plan.cwd,
       env: process.env,
@@ -389,97 +370,51 @@ function runCommand(plan, prompt) {
 
     child.stdout.on("data", (chunk) => stdout.append(chunk));
     child.stderr.on("data", (chunk) => stderr.append(chunk));
-    child.stdin.on("error", () => {
-      // A command may close stdin before the bridge finishes writing the prompt.
-    });
-
+    child.stdin.on("error", () => {});
     child.once("error", (error) => {
-      if (!settled) {
-        settled = true;
-        reject(error);
-      }
+      if (!settled) { settled = true; reject(error); }
     });
-
     child.once("close", (exitCode, signal) => {
       if (!settled) {
         settled = true;
-        resolve({
-          stdout: stdout.value(),
-          stderr: stderr.value(),
-          stdoutTruncated: stdout.truncated,
-          stderrTruncated: stderr.truncated,
-          exitCode,
-          signal,
-          durationMs: Date.now() - startedAt,
-        });
+        resolve({ stdout: stdout.value(), stderr: stderr.value(), stdoutTruncated: stdout.truncated, stderrTruncated: stderr.truncated, exitCode, signal, durationMs: Date.now() - startedAt });
       }
     });
-
     child.stdin.end(plan.promptDelivery === "stdin" ? prompt : undefined);
   });
 }
 
 async function readJsonBody(request) {
   const contentType = request.headers["content-type"] || "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    throw new HttpError(415, "Content-Type must be application/json");
-  }
-
+  if (!contentType.toLowerCase().includes("application/json")) throw new HttpError(415, "Content-Type must be application/json");
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of request) {
     totalBytes += chunk.length;
-    if (totalBytes > MAX_REQUEST_BYTES) {
-      throw new HttpError(413, "request body exceeds the 1 MiB limit");
-    }
+    if (totalBytes > MAX_REQUEST_BYTES) throw new HttpError(413, "request body exceeds the 1 MiB limit");
     chunks.push(chunk);
   }
-
-  if (totalBytes === 0) {
-    throw new HttpError(400, "request body cannot be empty");
-  }
-
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new HttpError(400, "request body is not valid JSON");
-  }
+  if (totalBytes === 0) throw new HttpError(400, "request body cannot be empty");
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new HttpError(400, "request body is not valid JSON"); }
 }
 
-// The addon's browser UI (served from Storybook's own origin, e.g.
-// http://localhost:6006) calls this server directly via fetch(), which is a
-// cross-origin request. Without CORS headers, the browser fails the
-// preflight (or the response read) and fetch() rejects with an opaque
-// "Failed to fetch" before this server's actual response is ever seen.
 function applyCorsHeaders(request, response) {
   const origin = request.headers.origin;
   response.setHeader("Access-Control-Allow-Origin", origin || "*");
   response.setHeader("Vary", "Origin");
   response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  response.setHeader(
-    "Access-Control-Allow-Headers",
-    request.headers["access-control-request-headers"] || "Content-Type",
-  );
+  response.setHeader("Access-Control-Allow-Headers", request.headers["access-control-request-headers"] || "Content-Type");
 }
 
 function sendJson(response, statusCode, body, extraHeaders = {}) {
   const encodedBody = Buffer.from(`${JSON.stringify(body, null, 2)}\n`);
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": encodedBody.length,
-    ...extraHeaders,
-  });
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8", "Content-Length": encodedBody.length, ...extraHeaders });
   response.end(encodedBody);
 }
 
 function logEvent(event, details = {}) {
-  console.log(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      event,
-      ...details,
-    }),
-  );
+  console.log(JSON.stringify({ timestamp: new Date().toISOString(), event, ...details }));
 }
 
 async function handleReview(request, response) {
@@ -488,19 +423,28 @@ async function handleReview(request, response) {
 
   if (!executeEnabled) {
     const execution = createExecutionPlan(commandTemplate, payload.projectRoot, prompt);
-    logEvent("review.dry-run", {
+    const historyId = randomUUID();
+    await saveHistoryEntry({
+      id: historyId,
+      createdAt: new Date().toISOString(),
+      projectRoot: payload.projectRoot,
       storyId: payload.storyId,
       targetFile: payload.targetFile,
+      absoluteTargetFile: payload.absoluteTargetFile,
+      comments: payload.comments,
+      status: "dry-run",
       prompt,
-      execution,
+      beforeContent: null,
+      afterContent: null,
+      result: null,
     });
+    logEvent("review.dry-run", { historyId, storyId: payload.storyId, targetFile: payload.targetFile, execution });
     sendJson(response, 202, {
       ok: true,
       mode: "dry-run",
       status: "accepted",
-      message: execution.configured
-        ? "Dry-run only; the command was not executed."
-        : "Dry-run only; AI_EDIT_COMMAND is not configured and no command was executed.",
+      historyId,
+      message: execution.configured ? "Dry-run only; the command was not executed." : "Dry-run only; AI_EDIT_COMMAND is not configured and no command was executed.",
       storyId: payload.storyId,
       targetFile: payload.targetFile,
       prompt,
@@ -509,51 +453,45 @@ async function handleReview(request, response) {
     return;
   }
 
-  if (commandTemplate === null) {
-    throw new HttpError(503, "AI_EDIT_COMMAND must be configured when AI_BRIDGE_EXECUTE=1");
-  }
+  if (commandTemplate === null) throw new HttpError(503, "AI_EDIT_COMMAND must be configured when AI_BRIDGE_EXECUTE=1");
 
-  const executionCwd = await validateExecutionTarget(payload);
-  const execution = createExecutionPlan(commandTemplate, executionCwd, prompt);
-  logEvent("review.execution.started", {
-    storyId: payload.storyId,
-    targetFile: payload.targetFile,
-    prompt,
-    execution,
-  });
+  const { realProjectRoot, realTargetFile } = await validateExecutionTarget(payload);
+  const execution = createExecutionPlan(commandTemplate, realProjectRoot, prompt);
+  const beforeContent = await readFile(realTargetFile, "utf8");
+  const historyId = randomUUID();
+  const createdAt = new Date().toISOString();
+
+  logEvent("review.execution.started", { historyId, storyId: payload.storyId, targetFile: payload.targetFile, execution });
 
   let result;
   try {
     result = await runCommand(execution, prompt);
   } catch (error) {
-    logEvent("review.execution.spawn-error", {
-      storyId: payload.storyId,
-      targetFile: payload.targetFile,
-      error: error.message,
+    await saveHistoryEntry({
+      id: historyId, createdAt, projectRoot: realProjectRoot, storyId: payload.storyId,
+      targetFile: payload.targetFile, absoluteTargetFile: realTargetFile, comments: payload.comments,
+      status: "spawn-error", prompt, beforeContent, afterContent: beforeContent, result: { error: error.message },
     });
-    sendJson(response, 502, {
-      ok: false,
-      mode: "execute",
-      status: "spawn-error",
-      storyId: payload.storyId,
-      targetFile: payload.targetFile,
-      execution,
-      error: error.message,
-    });
+    logEvent("review.execution.spawn-error", { historyId, storyId: payload.storyId, targetFile: payload.targetFile, error: error.message });
+    sendJson(response, 502, { ok: false, mode: "execute", status: "spawn-error", historyId, storyId: payload.storyId, targetFile: payload.targetFile, execution, error: error.message });
     return;
   }
 
+  let afterContent = beforeContent;
+  try { afterContent = await readFile(realTargetFile, "utf8"); } catch {}
   const succeeded = result.exitCode === 0;
-  logEvent("review.execution.completed", {
-    storyId: payload.storyId,
-    targetFile: payload.targetFile,
-    execution,
-    result,
+  await saveHistoryEntry({
+    id: historyId, createdAt, projectRoot: realProjectRoot, storyId: payload.storyId,
+    targetFile: payload.targetFile, absoluteTargetFile: realTargetFile, comments: payload.comments,
+    status: succeeded ? "completed" : "failed", prompt, beforeContent, afterContent, result,
   });
+
+  logEvent("review.execution.completed", { historyId, storyId: payload.storyId, targetFile: payload.targetFile, execution, result });
   sendJson(response, succeeded ? 200 : 502, {
     ok: succeeded,
     mode: "execute",
     status: succeeded ? "completed" : "failed",
+    historyId,
     storyId: payload.storyId,
     targetFile: payload.targetFile,
     execution,
@@ -561,37 +499,70 @@ async function handleReview(request, response) {
   });
 }
 
+async function handleHistory(response) {
+  const history = await listHistory(BUNDLED_PROJECT_ROOT);
+  sendJson(response, 200, { ok: true, history });
+}
+
+async function handleRollback(request, response) {
+  const body = await readJsonBody(request);
+  if (!isRecord(body)) throw new HttpError(400, "request body must be a JSON object");
+  const historyId = requireNonEmptyString(body.historyId, "historyId");
+  const force = body.force === true;
+  const entry = await readHistoryEntry(BUNDLED_PROJECT_ROOT, historyId);
+
+  if (typeof entry.beforeContent !== "string") {
+    throw new HttpError(409, "This history entry has no restorable source snapshot");
+  }
+
+  const projectRoot = path.normalize(entry.projectRoot);
+  const targetFile = path.normalize(entry.absoluteTargetFile);
+  if (!isPathInside(projectRoot, targetFile)) throw new HttpError(400, "History target resolves outside projectRoot");
+  const currentContent = await readFile(targetFile, "utf8");
+  const drifted = typeof entry.afterContent === "string" && currentContent !== entry.afterContent;
+
+  if (drifted && !force) {
+    throw new HttpError(409, "Target file changed after this AI review. Retry rollback with force=true to restore the saved snapshot.", {
+      historyId,
+      targetFile: entry.targetFile,
+      drifted: true,
+    });
+  }
+
+  await writeFile(targetFile, entry.beforeContent, "utf8");
+  entry.rolledBackAt = new Date().toISOString();
+  entry.rollbackForced = force;
+  await saveHistoryEntry(entry);
+  logEvent("review.rollback.completed", { historyId, targetFile: entry.targetFile, force, drifted });
+  sendJson(response, 200, { ok: true, status: "rolled-back", historyId, targetFile: entry.targetFile, drifted, forced: force, rolledBackAt: entry.rolledBackAt });
+}
+
 async function handleRequest(request, response) {
   applyCorsHeaders(request, response);
-
-  if (request.method === "OPTIONS") {
-    response.writeHead(204);
-    response.end();
-    return;
-  }
+  if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
 
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
 
   if (request.method === "GET" && requestUrl.pathname === "/health") {
-    sendJson(response, 200, {
-      ok: true,
-      mode: executeEnabled ? "execute" : "dry-run",
-      commandConfigured: commandTemplate !== null,
-      defaultProjectRoot: BUNDLED_PROJECT_ROOT,
-    });
+    sendJson(response, 200, { ok: true, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT });
     return;
   }
-
+  if (request.method === "GET" && requestUrl.pathname === "/history") {
+    await handleHistory(response);
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/rollback") {
+    await handleRollback(request, response);
+    return;
+  }
   if (requestUrl.pathname === "/review" && request.method !== "POST") {
     sendJson(response, 405, { ok: false, error: "Method not allowed" }, { Allow: "POST, OPTIONS" });
     return;
   }
-
   if (request.method === "POST" && requestUrl.pathname === "/review") {
     await handleReview(request, response);
     return;
   }
-
   sendJson(response, 404, { ok: false, error: "Not found" });
 }
 
@@ -599,18 +570,9 @@ export function createBridgeServer() {
   return http.createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
       const statusCode = error instanceof HttpError ? error.statusCode : 500;
-      logEvent("request.error", {
-        method: request.method,
-        url: request.url,
-        statusCode,
-        error: error.message,
-      });
-
+      logEvent("request.error", { method: request.method, url: request.url, statusCode, error: error.message, details: error.details ?? undefined });
       if (!response.headersSent) {
-        sendJson(response, statusCode, {
-          ok: false,
-          error: statusCode === 500 ? "Internal server error" : error.message,
-        });
+        sendJson(response, statusCode, { ok: false, error: statusCode === 500 ? "Internal server error" : error.message, details: error instanceof HttpError ? error.details : null });
       } else {
         response.end();
       }
@@ -620,31 +582,16 @@ export function createBridgeServer() {
 
 function startServer() {
   const server = createBridgeServer();
-
-  server.once("error", (error) => {
-    logEvent("server.error", { error: error.message });
-    process.exitCode = 1;
-  });
-
+  server.once("error", (error) => { logEvent("server.error", { error: error.message }); process.exitCode = 1; });
   server.listen(port, host, () => {
-    logEvent("server.started", {
-      address: `http://${host}:${port}`,
-      mode: executeEnabled ? "execute" : "dry-run",
-      commandConfigured: commandTemplate !== null,
-      defaultProjectRoot: BUNDLED_PROJECT_ROOT,
-    });
+    logEvent("server.started", { address: `http://${host}:${port}`, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT });
   });
-
   for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.once(signal, () => {
-      server.close(() => process.exit(0));
-    });
+    process.once(signal, () => { server.close(() => process.exit(0)); });
   }
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
-if (import.meta.url === invokedPath) {
-  startServer();
-}
+if (import.meta.url === invokedPath) startServer();
 
 export { buildPrompt, createExecutionPlan, handleRequest, normalizePayload, parseCommandTemplate };
