@@ -11,44 +11,40 @@
 
 ## 바로 실행
 
-npm에 게시하기 전에는 GitHub 저장소를 직접 `npx`로 실행할 수 있습니다.
-
 ```bash
 npx github:hwangilyong/create_hiy_front
 ```
 
-대화형으로 실행하면 다음 항목을 선택합니다.
+대화형 실행 시 프로젝트/지도/package manager와 함께 Storybook AI Review addon 포함 여부를 선택할 수 있습니다.
 
-```text
-프로젝트 이름: hiy-front-app
+## Storybook AI Review
 
-지도 기능을 사용하시겠습니까?
-  1) 지도 사용 안 함 - React 일반 템플릿
-  2) OpenLayers - React + OpenLayers 템플릿
+`hwangilyong/storybook_addon`을 생성 프로젝트에 선택적으로 주입할 수 있습니다.
 
-Package manager를 선택해주세요.
-  1) npm
-  2) pnpm
-  3) yarn
-  4) bun
-
-의존성을 지금 설치할까요? (Y/n)
-새 Git 저장소로 초기화할까요? (Y/n)
+```bash
+npx github:hwangilyong/create_hiy_front my-app --storybook-ai-review
 ```
 
-선택 결과는 다음처럼 연결됩니다.
+선택하면 다음 항목이 자동 구성됩니다.
 
-```text
-Map = none
-  -> hwangilyong/react_init_agent
+- `storybook`, `@storybook/react-vite` dev dependency
+- `@hiy/storybook-addon-ai-review` GitHub dependency
+- `storybook`, `build-storybook` scripts
+- `.storybook/main.ts`
+- `.storybook/preview.ts`
+- `.env.example`의 `VITE_HIY_AI_REVIEW_ENDPOINT`
 
-Map = openlayers
-  -> hwangilyong/react_ol_init
+실행:
+
+```bash
+npm run storybook
 ```
+
+Storybook toolbar의 `AI Review`를 켠 뒤 Canvas의 요소를 클릭하면 selector, text, attributes, bounding box가 수집되고 panel에서 코멘트를 달 수 있습니다. 코멘트는 AI context JSON으로 복사하거나 `VITE_HIY_AI_REVIEW_ENDPOINT`에 지정한 AI bridge로 전송할 수 있습니다.
+
+현재 addon 저장소가 private이므로 생성 프로젝트에서 의존성을 설치할 때 해당 저장소에 접근 가능한 GitHub 인증이 필요합니다.
 
 ## 명령형 사용
-
-질문 없이 옵션으로도 실행할 수 있습니다.
 
 ```bash
 # 일반 React
@@ -57,23 +53,18 @@ npx github:hwangilyong/create_hiy_front my-app --map none
 # React + OpenLayers
 npx github:hwangilyong/create_hiy_front gis-app --map openlayers
 
-# 템플릿 ID 직접 선택
-npx github:hwangilyong/create_hiy_front gis-app --template react-ol
+# Storybook AI Review 포함
+npx github:hwangilyong/create_hiy_front my-app --storybook-ai-review
+
+# Storybook AI Review 명시적 제외
+npx github:hwangilyong/create_hiy_front my-app --no-storybook-ai-review
 
 # pnpm 사용 + 설치는 나중에
 npx github:hwangilyong/create_hiy_front gis-app \
   --map openlayers \
   --package-manager pnpm \
+  --storybook-ai-review \
   --skip-install
-
-# Git 초기화 생략
-npx github:hwangilyong/create_hiy_front my-app --no-git
-```
-
-등록된 템플릿은 아래 명령으로 확인할 수 있습니다.
-
-```bash
-npx github:hwangilyong/create_hiy_front --list
 ```
 
 ## 옵션
@@ -82,6 +73,8 @@ npx github:hwangilyong/create_hiy_front --list
 --template <react|react-ol>       사용할 템플릿을 직접 선택
 --map <none|openlayers>           지도 사용 여부로 템플릿 선택
 --package-manager <name>          npm | pnpm | yarn | bun
+--storybook-ai-review             Storybook AI Review addon 포함
+--no-storybook-ai-review          Storybook AI Review addon 제외
 --skip-install                    의존성 설치 생략
 --git                             Git 저장소 초기화
 --no-git                          Git 저장소 초기화 생략
@@ -91,22 +84,11 @@ npx github:hwangilyong/create_hiy_front --list
 -h, --help                        도움말 출력
 ```
 
-`--yes`만 사용하면 기본값은 다음과 같습니다.
+`--yes`만 사용하면 Storybook AI Review는 기본적으로 비활성화됩니다. 필요한 경우 `--yes --storybook-ai-review`로 명시해서 사용할 수 있습니다.
 
-- 프로젝트 이름: `hiy-front-app`
-- 템플릿: `react`
-- 지도: 사용 안 함
-- package manager: `npm`
-- 의존성 설치: 수행
-- Git 초기화: 수행
+## Private 저장소 인증
 
-## Private 템플릿 인증
-
-현재 연결된 `react_init_agent`, `react_ol_init` 저장소가 private이면 해당 저장소에 접근할 수 있는 GitHub 인증이 필요합니다.
-
-CLI는 우선 GitHub CLI(`gh`)를 사용하고, 사용할 수 없으면 HTTPS `git clone`을 시도합니다.
-
-권장 방식:
+private 템플릿이나 `storybook_addon`을 사용할 때 해당 저장소에 접근 가능한 GitHub 인증이 필요합니다.
 
 ```bash
 gh auth login
@@ -124,43 +106,12 @@ create_hiy_front
   -> .git 제거
   -> 새 프로젝트 폴더로 복사
   -> package.json name 재설정
+  -> 선택 시 Storybook AI Review 설정 주입
   -> 기존 lockfile 제거
   -> .env.example이 있으면 .env.local 생성
   -> 선택한 package manager로 install
   -> 선택 시 git init
 ```
-
-템플릿의 기존 Git history는 새 프로젝트로 복사되지 않습니다.
-
-## 템플릿 Registry
-
-템플릿 정의는 `src/templates.js` 한 곳에서 관리합니다.
-
-```js
-{
-  id: 'react-ol',
-  name: 'React + OpenLayers Starter',
-  map: 'openlayers',
-  repository: 'hwangilyong/react_ol_init',
-  ref: 'main'
-}
-```
-
-향후 Cesium이나 MapLibre를 추가할 때 CLI 흐름을 새로 만들 필요 없이 Registry에 항목을 추가하면 됩니다.
-
-예:
-
-```js
-{
-  id: 'react-cesium',
-  name: 'React + Cesium Starter',
-  map: 'cesium',
-  repository: 'hwangilyong/react_cesium_init',
-  ref: 'main'
-}
-```
-
-그러면 지도 선택 항목도 Registry에서 자동 생성됩니다.
 
 ## 개발
 
@@ -168,19 +119,6 @@ Node.js 20 이상이 필요합니다.
 
 ```bash
 npm test
-```
-
-로컬에서 CLI를 직접 실행하려면:
-
-```bash
 node ./bin/create-hiy-front.js --help
 node ./bin/create-hiy-front.js --list
-```
-
-## npm 게시 후
-
-npm에 `create-hiy-front` 이름으로 게시하면 다음처럼 더 짧게 사용할 수 있습니다.
-
-```bash
-npx create-hiy-front
 ```
