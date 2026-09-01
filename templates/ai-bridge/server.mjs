@@ -437,6 +437,22 @@ async function readJsonBody(request) {
   }
 }
 
+// The addon's browser UI (served from Storybook's own origin, e.g.
+// http://localhost:6006) calls this server directly via fetch(), which is a
+// cross-origin request. Without CORS headers, the browser fails the
+// preflight (or the response read) and fetch() rejects with an opaque
+// "Failed to fetch" before this server's actual response is ever seen.
+function applyCorsHeaders(request, response) {
+  const origin = request.headers.origin;
+  response.setHeader("Access-Control-Allow-Origin", origin || "*");
+  response.setHeader("Vary", "Origin");
+  response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  response.setHeader(
+    "Access-Control-Allow-Headers",
+    request.headers["access-control-request-headers"] || "Content-Type",
+  );
+}
+
 function sendJson(response, statusCode, body, extraHeaders = {}) {
   const encodedBody = Buffer.from(`${JSON.stringify(body, null, 2)}\n`);
   response.writeHead(statusCode, {
@@ -537,6 +553,14 @@ async function handleReview(request, response) {
 }
 
 async function handleRequest(request, response) {
+  applyCorsHeaders(request, response);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
 
   if (request.method === "GET" && requestUrl.pathname === "/health") {
@@ -550,7 +574,7 @@ async function handleRequest(request, response) {
   }
 
   if (requestUrl.pathname === "/review" && request.method !== "POST") {
-    sendJson(response, 405, { ok: false, error: "Method not allowed" }, { Allow: "POST" });
+    sendJson(response, 405, { ok: false, error: "Method not allowed" }, { Allow: "POST, OPTIONS" });
     return;
   }
 
