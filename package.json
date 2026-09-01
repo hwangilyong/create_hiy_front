@@ -1,6 +1,6 @@
 {
   "name": "create-hiy-front",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Interactive frontend project initializer for HIY React templates",
   "type": "module",
   "bin": {
@@ -21,6 +21,8 @@
     "react",
     "vite",
     "openlayers",
+    "storybook",
+    "ai-review",
     "starter",
     "scaffold",
     "cli"
