@@ -78,8 +78,7 @@ export function createStore(projectRoot) {
     CREATE TABLE IF NOT EXISTS ai_file_lock (
       file_path TEXT PRIMARY KEY,
       job_id TEXT NOT NULL,
-      locked_at TEXT NOT NULL,
-      FOREIGN KEY(job_id) REFERENCES ai_job(id) ON DELETE CASCADE
+      locked_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS ai_history (
@@ -116,8 +115,6 @@ export function createStore(projectRoot) {
     CREATE INDEX IF NOT EXISTS idx_review_comment_story ON review_comment(story_id, created_at);
   `);
 
-  // Locks are process-owned. A bridge restart invalidates every previous lock.
-  // Jobs that were running when the process died are safe to retry from the queue.
   const recover = db.transaction(() => {
     db.prepare("DELETE FROM ai_file_lock").run();
     db.prepare(`UPDATE ai_job
@@ -225,8 +222,10 @@ export function createStore(projectRoot) {
   }
 
   function listQueuedStories() {
-    return db.prepare(`SELECT DISTINCT project_root, story_id
-      FROM ai_job WHERE status = 'queued' ORDER BY MIN(created_at)`).all();
+    return db.prepare(`SELECT project_root, story_id, MIN(created_at) AS first_created_at
+      FROM ai_job WHERE status = 'queued'
+      GROUP BY project_root, story_id
+      ORDER BY first_created_at`).all();
   }
 
   function listQueuedJobs(projectRoot, storyId) {
@@ -245,23 +244,23 @@ export function createStore(projectRoot) {
     tx();
   }
 
-  function acquireLock(filePath, jobId, lockedAt) {
+  function acquireLock(filePath, ownerId, lockedAt) {
     const tx = db.transaction(() => {
       const owner = db.prepare("SELECT job_id FROM ai_file_lock WHERE file_path = ?").get(filePath);
-      if (owner && owner.job_id !== jobId) return { acquired: false, owner: owner.job_id };
+      if (owner && owner.job_id !== ownerId) return { acquired: false, owner: owner.job_id };
       db.prepare(`INSERT INTO ai_file_lock(file_path, job_id, locked_at)
         VALUES (?, ?, ?)
-        ON CONFLICT(file_path) DO UPDATE SET job_id = excluded.job_id, locked_at = excluded.locked_at`).run(filePath, jobId, lockedAt);
-      db.prepare("UPDATE ai_job_target SET lock_status = 'locked' WHERE job_id = ? AND absolute_file_path = ?").run(jobId, filePath);
-      return { acquired: true, owner: jobId };
+        ON CONFLICT(file_path) DO UPDATE SET job_id = excluded.job_id, locked_at = excluded.locked_at`).run(filePath, ownerId, lockedAt);
+      db.prepare("UPDATE ai_job_target SET lock_status = 'locked' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
+      return { acquired: true, owner: ownerId };
     });
     return tx();
   }
 
-  function releaseLock(filePath, jobId) {
+  function releaseLock(filePath, ownerId) {
     const tx = db.transaction(() => {
-      db.prepare("DELETE FROM ai_file_lock WHERE file_path = ? AND job_id = ?").run(filePath, jobId);
-      db.prepare("UPDATE ai_job_target SET lock_status = 'released' WHERE job_id = ? AND absolute_file_path = ?").run(jobId, filePath);
+      db.prepare("DELETE FROM ai_file_lock WHERE file_path = ? AND job_id = ?").run(filePath, ownerId);
+      db.prepare("UPDATE ai_job_target SET lock_status = 'released' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
     });
     tx();
   }
