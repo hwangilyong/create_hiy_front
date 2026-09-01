@@ -11,6 +11,7 @@ export function parseArgs(argv) {
     skipInstall: false,
     git: null,
     storybookAiReview: null,
+    storybookAiReviewDemo: null,
     yes: false,
     help: false,
     version: false,
@@ -56,6 +57,16 @@ export function parseArgs(argv) {
     }
     if (arg === '--no-storybook-ai-review') {
       result.storybookAiReview = false;
+      result.storybookAiReviewDemo = false;
+      continue;
+    }
+    if (arg === '--storybook-ai-review-demo') {
+      result.storybookAiReview = true;
+      result.storybookAiReviewDemo = true;
+      continue;
+    }
+    if (arg === '--no-storybook-ai-review-demo') {
+      result.storybookAiReviewDemo = false;
       continue;
     }
 
