@@ -10,6 +10,7 @@ export function parseArgs(argv) {
     packageManager: null,
     skipInstall: false,
     git: null,
+    storybookAiReview: null,
     yes: false,
     help: false,
     version: false,
@@ -47,6 +48,14 @@ export function parseArgs(argv) {
     }
     if (arg === '--git') {
       result.git = true;
+      continue;
+    }
+    if (arg === '--storybook-ai-review') {
+      result.storybookAiReview = true;
+      continue;
+    }
+    if (arg === '--no-storybook-ai-review') {
+      result.storybookAiReview = false;
       continue;
     }
 
