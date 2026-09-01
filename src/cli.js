@@ -3,7 +3,7 @@ import { createPrompter } from './prompts.js';
 import { createProject } from './scaffold.js';
 import { getTemplateByMap, listTemplates } from './templates.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'];
 
 function printHelp() {
@@ -16,6 +16,8 @@ Options:
   --template <react|react-ol>       사용할 템플릿을 직접 선택
   --map <none|openlayers>           지도 사용 여부로 템플릿 선택
   --package-manager <name>          npm | pnpm | yarn | bun
+  --storybook-ai-review             Storybook AI Review addon 포함
+  --no-storybook-ai-review          Storybook AI Review addon 제외
   --skip-install                    의존성 설치 생략
   --git                             Git 저장소 초기화
   --no-git                          Git 저장소 초기화 생략
@@ -28,7 +30,7 @@ Examples:
   create-hiy-front
   create-hiy-front my-app --map none
   create-hiy-front gis-app --map openlayers --package-manager pnpm
-  create-hiy-front my-app --template react-ol --skip-install
+  create-hiy-front my-app --template react-ol --storybook-ai-review
 `);
 }
 
@@ -85,6 +87,10 @@ export async function runCli(argv) {
       ? 'npm'
       : await prompter.select('Package manager를 선택해주세요.', packageManagerChoices(), 0));
 
+    const storybookAiReview = args.storybookAiReview ?? (args.yes
+      ? false
+      : await prompter.confirm('Storybook AI Review addon을 추가할까요?', false));
+
     const install = args.skipInstall
       ? false
       : args.yes
@@ -98,6 +104,7 @@ export async function runCli(argv) {
     console.log(`  Template: ${template.name} (${template.repository})`);
     console.log(`  Map:      ${template.map}`);
     console.log(`  Package:  ${packageManager}`);
+    console.log(`  AI Review:${storybookAiReview ? ' yes' : ' no'}`);
     console.log(`  Install:  ${install ? 'yes' : 'no'}`);
     console.log(`  Git:      ${git ? 'yes' : 'no'}\n`);
 
@@ -105,6 +112,7 @@ export async function runCli(argv) {
       projectName,
       template,
       packageManager,
+      storybookAiReview,
       install,
       git,
     });
@@ -123,6 +131,9 @@ export async function runCli(argv) {
       console.log(`  ${packageManager} install`);
     }
     console.log(`  ${packageManager} run dev`);
+    if (storybookAiReview) {
+      console.log(`  ${packageManager} run storybook`);
+    }
   } finally {
     prompter.close();
   }
