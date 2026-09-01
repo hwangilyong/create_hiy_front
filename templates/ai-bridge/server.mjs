@@ -1,28 +1,26 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createStore } from "./store.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4700;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
-const HISTORY_DIRECTORY_NAME = ".hiy-ai-review/history";
-const MAX_RETAINED_JOBS = 200;
 
 const BUNDLED_PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-
 const host = process.env.AI_BRIDGE_HOST || DEFAULT_HOST;
 const port = parsePort(process.env.AI_BRIDGE_PORT);
 const executeEnabled = process.env.AI_BRIDGE_EXECUTE === "1";
 const commandTemplate = parseCommandTemplate(process.env.AI_EDIT_COMMAND);
+const store = createStore(BUNDLED_PROJECT_ROOT);
 
-// User-facing serialization is Story based. Actual source safety is file based.
-const storyQueues = new Map();
-const fileLocks = new Map();
-const jobs = new Map();
+// Only the in-process drain mutex remains ephemeral. Job, lock, history and
+// comment state are persisted in SQLite and survive bridge restarts.
+const drainingStories = new Set();
 
 class HttpError extends Error {
   constructor(statusCode, message, details = null) {
@@ -121,12 +119,27 @@ function normalizePayload(value) {
         text: typeof target.text === "string" ? target.text : null,
         attributes: target.attributes ?? {},
         rect: target.rect ?? {},
+        source: isRecord(target.source) ? {
+          fileName: typeof target.source.fileName === "string" ? target.source.fileName : null,
+          lineNumber: typeof target.source.lineNumber === "number" ? target.source.lineNumber : null,
+          columnNumber: typeof target.source.columnNumber === "number" ? target.source.columnNumber : null,
+        } : null,
         lineNumber: isRecord(target.source) && typeof target.source.lineNumber === "number" ? target.source.lineNumber : null,
       },
     };
   });
 
   return { storyId, comments, instruction: typeof value.instruction === "string" ? value.instruction.trim() : "", projectRoot, targetFile: path.relative(projectRoot, absoluteTargetFile), absoluteTargetFile };
+}
+
+function normalizeStoredComment(value) {
+  if (!isRecord(value)) throw new HttpError(400, "comment body must be an object");
+  const id = requireNonEmptyString(value.id, "id");
+  const storyId = requireNonEmptyString(value.storyId, "storyId");
+  const comment = requireNonEmptyString(value.comment, "comment");
+  const createdAt = typeof value.createdAt === "string" && value.createdAt ? value.createdAt : new Date().toISOString();
+  if (!isRecord(value.target)) throw new HttpError(400, "target must be an object");
+  return { id, storyId, comment, createdAt, target: value.target };
 }
 
 function displayValue(value) { return value === null || value === "" ? "(not provided)" : String(value); }
@@ -157,33 +170,18 @@ async function validateExecutionTarget(payload) {
   return { realProjectRoot, realTargetFile };
 }
 
-function historyDirectory(projectRoot) { return path.join(projectRoot, HISTORY_DIRECTORY_NAME); }
-function historyFile(projectRoot, historyId) {
-  if (!/^[a-f0-9-]{36}$/i.test(historyId)) throw new HttpError(400, "historyId is invalid");
-  return path.join(historyDirectory(projectRoot), `${historyId}.json`);
-}
-async function saveHistoryEntry(entry) {
-  const directory = historyDirectory(entry.projectRoot);
-  await mkdir(directory, { recursive: true });
-  await writeFile(historyFile(entry.projectRoot, entry.id), `${JSON.stringify(entry, null, 2)}\n`, "utf8");
-}
-async function readHistoryEntry(projectRoot, historyId) {
-  try { return JSON.parse(await readFile(historyFile(projectRoot, historyId), "utf8")); }
-  catch (error) { if (error instanceof HttpError) throw error; throw new HttpError(404, "History entry not found"); }
-}
 function historySummary(entry) {
-  return { id: entry.id, createdAt: entry.createdAt, storyId: entry.storyId, targetFile: entry.targetFile, status: entry.status, commentCount: Array.isArray(entry.comments) ? entry.comments.length : 0, comments: Array.isArray(entry.comments) ? entry.comments.map((item) => item.comment) : [], rollbackAvailable: typeof entry.beforeContent === "string", rolledBackAt: entry.rolledBackAt ?? null };
-}
-async function listHistory(projectRoot) {
-  const directory = historyDirectory(projectRoot);
-  let names;
-  try { names = await readdir(directory); } catch { return []; }
-  const entries = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    try { entries.push(historySummary(JSON.parse(await readFile(path.join(directory, name), "utf8")))); } catch {}
-  }
-  return entries.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return {
+    id: entry.id,
+    createdAt: entry.createdAt,
+    storyId: entry.storyId,
+    targetFile: entry.targetFile,
+    status: entry.status,
+    commentCount: Array.isArray(entry.comments) ? entry.comments.length : 0,
+    comments: Array.isArray(entry.comments) ? entry.comments.map((item) => item.comment) : [],
+    rollbackAvailable: typeof entry.beforeContent === "string",
+    rolledBackAt: entry.rolledBackAt ?? null,
+  };
 }
 
 function createOutputCapture() {
@@ -201,6 +199,7 @@ function createOutputCapture() {
     get truncated() { return truncated; },
   };
 }
+
 function runCommand(plan, prompt) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -234,7 +233,7 @@ async function clearProjectCaches(projectRoot) {
   return cleared;
 }
 
-function queueKey(payload) { return `${path.normalize(payload.projectRoot)}::${payload.storyId}`; }
+function queueKey(projectRoot, storyId) { return `${path.normalize(projectRoot)}::${storyId}`; }
 function publicJob(job) {
   return {
     id: job.id,
@@ -248,36 +247,15 @@ function publicJob(job) {
     historyId: job.historyId ?? null,
     error: job.error ?? null,
     retryable: job.status === "blocked",
+    deletable: job.status === "queued" || job.status === "blocked",
     lockOwnerJobId: job.lockOwnerJobId ?? null,
     cacheCleared: job.cacheCleared ?? [],
   };
 }
-function refreshQueuePositions(queue) {
-  queue.items.forEach((item, index) => {
-    const job = jobs.get(item.jobId);
-    if (job && job.status === "queued") job.queuePosition = index + 1;
-  });
-}
-function pruneJobs() {
-  if (jobs.size <= MAX_RETAINED_JOBS) return;
-  const removable = [...jobs.values()].filter((job) => ["completed", "failed", "spawn-error", "blocked"].includes(job.status)).sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)));
-  while (jobs.size > MAX_RETAINED_JOBS && removable.length > 0) jobs.delete(removable.shift().id);
-}
-function tryAcquireFileLock(filePath, jobId) {
-  const owner = fileLocks.get(filePath);
-  if (owner && owner !== jobId) return { acquired: false, owner };
-  fileLocks.set(filePath, jobId);
-  return { acquired: true, owner: jobId };
-}
-function releaseFileLock(filePath, jobId) {
-  if (fileLocks.get(filePath) === jobId) fileLocks.delete(filePath);
-}
 
-async function executeQueuedReview(item) {
-  const { payload, prompt, jobId } = item;
-  const job = jobs.get(jobId);
-  if (!job) return;
-
+async function executeJob(job) {
+  const payload = job.payload;
+  const prompt = job.prompt;
   let realProjectRoot;
   let realTargetFile;
   let beforeContent;
@@ -286,23 +264,28 @@ async function executeQueuedReview(item) {
 
   try {
     ({ realProjectRoot, realTargetFile } = await validateExecutionTarget(payload));
-    const lock = tryAcquireFileLock(realTargetFile, jobId);
+    const lock = store.acquireLock(realTargetFile, job.id, new Date().toISOString());
     if (!lock.acquired) {
-      job.status = "blocked";
-      job.queuePosition = 0;
-      job.lockOwnerJobId = lock.owner;
-      job.error = `Target file is locked by AI job ${lock.owner}`;
-      job.completedAt = new Date().toISOString();
-      logEvent("review.execution.blocked", { jobId, storyId: payload.storyId, targetFile: payload.targetFile, lockOwnerJobId: lock.owner });
+      store.updateJob(job.id, {
+        status: "blocked",
+        queuePosition: 0,
+        lockOwnerJobId: lock.owner,
+        error: `Target file is locked by AI job ${lock.owner}`,
+        completedAt: new Date().toISOString(),
+      });
+      logEvent("review.execution.blocked", { jobId: job.id, storyId: payload.storyId, targetFile: payload.targetFile, lockOwnerJobId: lock.owner });
       return;
     }
 
-    job.status = "running";
-    job.queuePosition = 0;
-    job.lockOwnerJobId = null;
-    job.error = null;
-    job.startedAt = new Date().toISOString();
-    logEvent("review.execution.started", { jobId, storyId: payload.storyId, targetFile: payload.targetFile });
+    store.updateJob(job.id, {
+      status: "running",
+      queuePosition: 0,
+      lockOwnerJobId: null,
+      error: null,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    });
+    logEvent("review.execution.started", { jobId: job.id, storyId: payload.storyId, targetFile: payload.targetFile });
 
     try {
       beforeContent = await readFile(realTargetFile, "utf8");
@@ -313,76 +296,109 @@ async function executeQueuedReview(item) {
       const succeeded = result.exitCode === 0;
       const cacheCleared = succeeded ? await clearProjectCaches(realProjectRoot) : [];
 
-      await saveHistoryEntry({
-        id: historyId, createdAt, projectRoot: realProjectRoot, storyId: payload.storyId,
-        targetFile: payload.targetFile, absoluteTargetFile: realTargetFile, comments: payload.comments,
-        status: succeeded ? "completed" : "failed", prompt, beforeContent, afterContent, result, jobId, cacheCleared,
+      store.saveHistory({
+        id: historyId,
+        jobId: job.id,
+        createdAt,
+        projectRoot: realProjectRoot,
+        storyId: payload.storyId,
+        targetFile: payload.targetFile,
+        absoluteTargetFile: realTargetFile,
+        comments: payload.comments,
+        status: succeeded ? "completed" : "failed",
+        prompt,
+        beforeContent,
+        afterContent,
+        result,
+        cacheCleared,
       });
 
-      job.status = succeeded ? "completed" : "failed";
-      job.historyId = historyId;
-      job.cacheCleared = cacheCleared;
-      job.completedAt = new Date().toISOString();
-      if (!succeeded) job.error = result.stderr || `AI command exited with code ${result.exitCode}`;
-      logEvent("review.execution.completed", { jobId, historyId, storyId: payload.storyId, targetFile: payload.targetFile, status: job.status, cacheCleared });
+      store.updateJob(job.id, {
+        status: succeeded ? "completed" : "failed",
+        historyId,
+        cacheCleared,
+        completedAt: new Date().toISOString(),
+        error: succeeded ? null : (result.stderr || `AI command exited with code ${result.exitCode}`),
+      });
+      logEvent("review.execution.completed", { jobId: job.id, historyId, storyId: payload.storyId, targetFile: payload.targetFile, status: succeeded ? "completed" : "failed", cacheCleared });
     } finally {
-      releaseFileLock(realTargetFile, jobId);
+      store.releaseLock(realTargetFile, job.id);
     }
   } catch (error) {
-    job.status = "spawn-error";
-    job.error = error.message;
-    job.completedAt = new Date().toISOString();
+    store.updateJob(job.id, { status: "spawn-error", error: error.message, completedAt: new Date().toISOString() });
     try {
       if (realProjectRoot && realTargetFile && typeof beforeContent === "string") {
-        await saveHistoryEntry({ id: historyId, createdAt, projectRoot: realProjectRoot, storyId: payload.storyId, targetFile: payload.targetFile, absoluteTargetFile: realTargetFile, comments: payload.comments, status: "spawn-error", prompt, beforeContent, afterContent: beforeContent, result: { error: error.message }, jobId });
-        job.historyId = historyId;
+        store.saveHistory({
+          id: historyId,
+          jobId: job.id,
+          createdAt,
+          projectRoot: realProjectRoot,
+          storyId: payload.storyId,
+          targetFile: payload.targetFile,
+          absoluteTargetFile: realTargetFile,
+          comments: payload.comments,
+          status: "spawn-error",
+          prompt,
+          beforeContent,
+          afterContent: beforeContent,
+          result: { error: error.message },
+          cacheCleared: [],
+        });
+        store.updateJob(job.id, { historyId });
       }
     } catch {}
-    logEvent("review.execution.error", { jobId, storyId: payload.storyId, targetFile: payload.targetFile, error: error.message });
+    if (realTargetFile) store.releaseLock(realTargetFile, job.id);
+    logEvent("review.execution.error", { jobId: job.id, storyId: payload.storyId, targetFile: payload.targetFile, error: error.message });
   }
 }
 
-async function drainStoryQueue(key) {
-  const queue = storyQueues.get(key);
-  if (!queue || queue.running) return;
-  queue.running = true;
+async function drainStoryQueue(projectRoot, storyId) {
+  const key = queueKey(projectRoot, storyId);
+  if (drainingStories.has(key)) return;
+  drainingStories.add(key);
   try {
-    while (queue.items.length > 0) {
-      const item = queue.items.shift();
-      refreshQueuePositions(queue);
-      await executeQueuedReview(item);
-      pruneJobs();
+    for (;;) {
+      const jobs = store.listQueuedJobs(projectRoot, storyId);
+      if (jobs.length === 0) break;
+      store.refreshQueuePositions(projectRoot, storyId, true);
+      await executeJob(jobs[0]);
     }
   } finally {
-    queue.running = false;
-    if (queue.items.length === 0) storyQueues.delete(key);
-    else void drainStoryQueue(key);
+    drainingStories.delete(key);
+    store.refreshQueuePositions(projectRoot, storyId, false);
   }
-}
-
-function enqueueExistingJob(job) {
-  const payload = job.payload;
-  const key = queueKey(payload);
-  let queue = storyQueues.get(key);
-  if (!queue) { queue = { running: false, items: [] }; storyQueues.set(key, queue); }
-  job.status = "queued";
-  job.queuePosition = queue.items.length + (queue.running ? 1 : 0);
-  job.startedAt = null;
-  job.completedAt = null;
-  job.error = null;
-  job.lockOwnerJobId = null;
-  queue.items.push({ jobId: job.id, payload: job.payload, prompt: job.prompt });
-  refreshQueuePositions(queue);
-  void drainStoryQueue(key);
-  return job;
 }
 
 function enqueueReview(payload, prompt) {
-  const jobId = randomUUID();
-  const job = { id: jobId, storyId: payload.storyId, targetFile: payload.targetFile, status: "queued", queuePosition: 0, createdAt: new Date().toISOString(), payload, prompt };
-  jobs.set(jobId, job);
-  enqueueExistingJob(job);
-  return job;
+  const job = {
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+    payload,
+    prompt,
+  };
+  store.insertJob(job, randomUUID);
+  const key = queueKey(payload.projectRoot, payload.storyId);
+  store.refreshQueuePositions(payload.projectRoot, payload.storyId, drainingStories.has(key));
+  void drainStoryQueue(payload.projectRoot, payload.storyId);
+  return store.getJob(job.id);
+}
+
+function retryJob(jobId) {
+  const job = store.getJob(jobId);
+  if (!job) throw new HttpError(404, "AI job not found");
+  if (job.status !== "blocked") throw new HttpError(409, "Only a lock-blocked AI job can be retried", { status: job.status });
+  store.updateJob(job.id, {
+    status: "queued",
+    queuePosition: 0,
+    startedAt: null,
+    completedAt: null,
+    error: null,
+    lockOwnerJobId: null,
+  });
+  const key = queueKey(job.projectRoot, job.storyId);
+  store.refreshQueuePositions(job.projectRoot, job.storyId, drainingStories.has(key));
+  void drainStoryQueue(job.projectRoot, job.storyId);
+  return store.getJob(job.id);
 }
 
 async function readJsonBody(request) {
@@ -404,7 +420,7 @@ function applyCorsHeaders(request, response) {
   const origin = request.headers.origin;
   response.setHeader("Access-Control-Allow-Origin", origin || "*");
   response.setHeader("Vary", "Origin");
-  response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", request.headers["access-control-request-headers"] || "Content-Type");
 }
 function sendJson(response, statusCode, body, extraHeaders = {}) {
@@ -420,7 +436,21 @@ async function handleReview(request, response) {
   if (!executeEnabled) {
     const execution = createExecutionPlan(commandTemplate, payload.projectRoot, prompt);
     const historyId = randomUUID();
-    await saveHistoryEntry({ id: historyId, createdAt: new Date().toISOString(), projectRoot: payload.projectRoot, storyId: payload.storyId, targetFile: payload.targetFile, absoluteTargetFile: payload.absoluteTargetFile, comments: payload.comments, status: "dry-run", prompt, beforeContent: null, afterContent: null, result: null });
+    store.saveHistory({
+      id: historyId,
+      createdAt: new Date().toISOString(),
+      projectRoot: payload.projectRoot,
+      storyId: payload.storyId,
+      targetFile: payload.targetFile,
+      absoluteTargetFile: payload.absoluteTargetFile,
+      comments: payload.comments,
+      status: "dry-run",
+      prompt,
+      beforeContent: null,
+      afterContent: null,
+      result: null,
+      cacheCleared: [],
+    });
     sendJson(response, 202, { ok: true, mode: "dry-run", status: "accepted", historyId, storyId: payload.storyId, targetFile: payload.targetFile, execution });
     return;
   }
@@ -431,23 +461,33 @@ async function handleReview(request, response) {
   sendJson(response, 202, { ok: true, mode: "execute", status: job.queuePosition > 0 ? "queued" : "running", jobId: job.id, storyId: job.storyId, targetFile: job.targetFile, queuePosition: job.queuePosition });
 }
 
-async function handleHistory(response) { sendJson(response, 200, { ok: true, history: await listHistory(BUNDLED_PROJECT_ROOT) }); }
+function handleHistory(response) {
+  sendJson(response, 200, { ok: true, history: store.listHistory().map(historySummary) });
+}
+
 function handleJobStatus(jobId, response) {
-  const job = jobs.get(jobId);
+  const job = store.getJob(jobId);
   if (!job) throw new HttpError(404, "AI job not found");
   sendJson(response, 200, { ok: true, job: publicJob(job) });
 }
+
 function handleQueueStatus(response) {
-  const active = [...jobs.values()].filter((job) => ["queued", "running", "blocked"].includes(job.status)).map(publicJob);
-  sendJson(response, 200, { ok: true, jobs: active, locks: [...fileLocks.entries()].map(([targetFile, jobId]) => ({ targetFile, jobId })) });
+  sendJson(response, 200, { ok: true, jobs: store.listJobs({ activeOnly: true }).map(publicJob), locks: store.listLocks() });
 }
+
 function handleRetryJob(jobId, response) {
-  const job = jobs.get(jobId);
-  if (!job) throw new HttpError(404, "AI job not found");
-  if (job.status !== "blocked") throw new HttpError(409, "Only a lock-blocked AI job can be retried", { status: job.status });
-  enqueueExistingJob(job);
+  const job = retryJob(jobId);
   logEvent("review.retry.queued", { jobId: job.id, storyId: job.storyId, targetFile: job.targetFile, queuePosition: job.queuePosition });
   sendJson(response, 202, { ok: true, job: publicJob(job) });
+}
+
+function handleDeleteJob(jobId, response) {
+  const result = store.deleteJob(jobId);
+  if (!result) throw new HttpError(404, "AI job not found");
+  if (result.conflict) throw new HttpError(409, "Only queued or blocked AI jobs can be deleted", { status: result.job.status });
+  store.refreshQueuePositions(result.job.projectRoot, result.job.storyId, drainingStories.has(queueKey(result.job.projectRoot, result.job.storyId)));
+  logEvent("review.job.deleted", { jobId, storyId: result.job.storyId, targetFile: result.job.targetFile });
+  sendJson(response, 200, { ok: true, status: "deleted", jobId });
 }
 
 async function handleRollback(request, response) {
@@ -455,45 +495,81 @@ async function handleRollback(request, response) {
   if (!isRecord(body)) throw new HttpError(400, "request body must be a JSON object");
   const historyId = requireNonEmptyString(body.historyId, "historyId");
   const force = body.force === true;
-  const entry = await readHistoryEntry(BUNDLED_PROJECT_ROOT, historyId);
+  const entry = store.getHistory(historyId);
+  if (!entry) throw new HttpError(404, "History entry not found");
   if (typeof entry.beforeContent !== "string") throw new HttpError(409, "This history entry has no restorable source snapshot");
   const projectRoot = path.normalize(entry.projectRoot);
   const targetFile = path.normalize(entry.absoluteTargetFile);
   if (!isPathInside(projectRoot, targetFile)) throw new HttpError(400, "History target resolves outside projectRoot");
-  const lockOwner = fileLocks.get(targetFile);
-  if (lockOwner) throw new HttpError(423, "Target file is currently locked by an AI job", { lockOwnerJobId: lockOwner, targetFile: entry.targetFile });
-  const currentContent = await readFile(targetFile, "utf8");
-  const drifted = typeof entry.afterContent === "string" && currentContent !== entry.afterContent;
-  if (drifted && !force) throw new HttpError(409, "Target file changed after this AI review. Retry rollback with force=true to restore the saved snapshot.", { historyId, targetFile: entry.targetFile, drifted: true });
-  fileLocks.set(targetFile, `rollback:${historyId}`);
+
+  const lockOwner = `rollback:${historyId}`;
+  const lock = store.acquireLock(targetFile, lockOwner, new Date().toISOString());
+  if (!lock.acquired) throw new HttpError(423, "Target file is currently locked by an AI job", { lockOwnerJobId: lock.owner, targetFile: entry.targetFile });
   try {
+    const currentContent = await readFile(targetFile, "utf8");
+    const drifted = typeof entry.afterContent === "string" && currentContent !== entry.afterContent;
+    if (drifted && !force) throw new HttpError(409, "Target file changed after this AI review. Retry rollback with force=true to restore the saved snapshot.", { historyId, targetFile: entry.targetFile, drifted: true });
     await writeFile(targetFile, entry.beforeContent, "utf8");
     const cacheCleared = await clearProjectCaches(projectRoot);
     entry.rolledBackAt = new Date().toISOString();
     entry.rollbackForced = force;
     entry.rollbackCacheCleared = cacheCleared;
-    await saveHistoryEntry(entry);
+    store.saveHistory(entry);
     logEvent("review.rollback.completed", { historyId, targetFile: entry.targetFile, force, drifted, cacheCleared });
     sendJson(response, 200, { ok: true, status: "rolled-back", historyId, targetFile: entry.targetFile, drifted, forced: force, rolledBackAt: entry.rolledBackAt, cacheCleared });
   } finally {
-    fileLocks.delete(targetFile);
+    store.releaseLock(targetFile, lockOwner);
   }
+}
+
+async function handleUpsertComment(request, response) {
+  const comment = normalizeStoredComment(await readJsonBody(request));
+  store.upsertComment(comment);
+  sendJson(response, 200, { ok: true, comment });
+}
+
+function handleListComments(requestUrl, response) {
+  const storyId = requestUrl.searchParams.get("storyId");
+  sendJson(response, 200, { ok: true, comments: store.listComments(storyId || null) });
+}
+
+function handleDeleteComment(commentId, response) {
+  if (!store.deleteComment(commentId)) throw new HttpError(404, "Review comment not found");
+  sendJson(response, 200, { ok: true, status: "deleted", commentId });
 }
 
 async function handleRequest(request, response) {
   applyCorsHeaders(request, response);
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+
   if (request.method === "GET" && requestUrl.pathname === "/health") {
-    const activeJobs = [...jobs.values()].filter((job) => ["queued", "running", "blocked"].includes(job.status)).length;
-    sendJson(response, 200, { ok: true, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT, activeJobs, activeStoryQueues: storyQueues.size, activeFileLocks: fileLocks.size });
+    sendJson(response, 200, {
+      ok: true,
+      mode: executeEnabled ? "execute" : "dry-run",
+      commandConfigured: commandTemplate !== null,
+      defaultProjectRoot: BUNDLED_PROJECT_ROOT,
+      databasePath: store.databasePath,
+      activeJobs: store.listJobs({ activeOnly: true }).length,
+      activeStoryQueues: drainingStories.size,
+      activeFileLocks: store.listLocks().length,
+    });
     return;
   }
-  if (request.method === "GET" && requestUrl.pathname === "/history") { await handleHistory(response); return; }
+  if (request.method === "GET" && requestUrl.pathname === "/history") { handleHistory(response); return; }
   if (request.method === "GET" && requestUrl.pathname === "/jobs") { handleQueueStatus(response); return; }
+  if (request.method === "GET" && requestUrl.pathname === "/comments") { handleListComments(requestUrl, response); return; }
+  if (request.method === "POST" && requestUrl.pathname === "/comments") { await handleUpsertComment(request, response); return; }
+
   const retryMatch = requestUrl.pathname.match(/^\/jobs\/([^/]+)\/retry$/);
   if (request.method === "POST" && retryMatch) { handleRetryJob(decodeURIComponent(retryMatch[1]), response); return; }
-  if (request.method === "GET" && requestUrl.pathname.startsWith("/jobs/")) { handleJobStatus(decodeURIComponent(requestUrl.pathname.slice("/jobs/".length)), response); return; }
+  const jobMatch = requestUrl.pathname.match(/^\/jobs\/([^/]+)$/);
+  if (request.method === "GET" && jobMatch) { handleJobStatus(decodeURIComponent(jobMatch[1]), response); return; }
+  if (request.method === "DELETE" && jobMatch) { handleDeleteJob(decodeURIComponent(jobMatch[1]), response); return; }
+
+  const commentMatch = requestUrl.pathname.match(/^\/comments\/([^/]+)$/);
+  if (request.method === "DELETE" && commentMatch) { handleDeleteComment(decodeURIComponent(commentMatch[1]), response); return; }
+
   if (request.method === "POST" && requestUrl.pathname === "/rollback") { await handleRollback(request, response); return; }
   if (requestUrl.pathname === "/review" && request.method !== "POST") { sendJson(response, 405, { ok: false, error: "Method not allowed" }, { Allow: "POST, OPTIONS" }); return; }
   if (request.method === "POST" && requestUrl.pathname === "/review") { await handleReview(request, response); return; }
@@ -510,11 +586,24 @@ export function createBridgeServer() {
     });
   });
 }
+
+function resumePersistedQueues() {
+  for (const row of store.listQueuedStories()) void drainStoryQueue(row.project_root, row.story_id);
+}
+
 function startServer() {
   const server = createBridgeServer();
   server.once("error", (error) => { logEvent("server.error", { error: error.message }); process.exitCode = 1; });
-  server.listen(port, host, () => logEvent("server.started", { address: `http://${host}:${port}`, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT }));
-  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { server.close(() => process.exit(0)); });
+  server.listen(port, host, () => {
+    logEvent("server.started", { address: `http://${host}:${port}`, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT, databasePath: store.databasePath });
+    if (executeEnabled && commandTemplate !== null) resumePersistedQueues();
+  });
+  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
+    server.close(() => {
+      store.close();
+      process.exit(0);
+    });
+  });
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
