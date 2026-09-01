@@ -144,6 +144,47 @@ function normalizeGeneratedProject(targetDir) {
   }
 }
 
+function configureStorybookAiReview(targetDir) {
+  const packageJsonPath = path.join(targetDir, 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    throw new Error('Storybook AI Review를 구성하려면 package.json이 필요합니다.');
+  }
+
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  packageJson.scripts = {
+    ...(packageJson.scripts ?? {}),
+    storybook: 'storybook dev -p 6006',
+    'build-storybook': 'storybook build',
+  };
+  packageJson.devDependencies = {
+    ...(packageJson.devDependencies ?? {}),
+    '@hiy/storybook-addon-ai-review': 'github:hwangilyong/storybook_addon#main',
+    '@storybook/react-vite': 'latest',
+    storybook: 'latest',
+  };
+  writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  const storybookDir = path.join(targetDir, '.storybook');
+  mkdirSync(storybookDir, { recursive: true });
+
+  writeFileSync(
+    path.join(storybookDir, 'main.ts'),
+    `import type { StorybookConfig } from '@storybook/react-vite';\n\nconst config: StorybookConfig = {\n  framework: '@storybook/react-vite',\n  stories: ['../src/**/*.mdx', '../src/**/*.stories.@(js|jsx|mjs|ts|tsx)'],\n  addons: ['@hiy/storybook-addon-ai-review/preset'],\n};\n\nexport default config;\n`,
+  );
+
+  writeFileSync(
+    path.join(storybookDir, 'preview.ts'),
+    `import type { Preview } from '@storybook/react-vite';\n\nconst preview: Preview = {\n  parameters: {\n    hiyAiReview: {\n      endpoint: import.meta.env.VITE_HIY_AI_REVIEW_ENDPOINT ?? '',\n    },\n  },\n};\n\nexport default preview;\n`,
+  );
+
+  const envExamplePath = path.join(targetDir, '.env.example');
+  const existingEnv = existsSync(envExamplePath) ? readFileSync(envExamplePath, 'utf8') : '';
+  if (!existingEnv.includes('VITE_HIY_AI_REVIEW_ENDPOINT=')) {
+    const prefix = existingEnv && !existingEnv.endsWith('\n') ? '\n' : '';
+    writeFileSync(envExamplePath, `${existingEnv}${prefix}VITE_HIY_AI_REVIEW_ENDPOINT=\n`);
+  }
+}
+
 function initializeGit(targetDir, warnings) {
   if (!commandExists('git')) {
     warnings.push('Git을 찾을 수 없어 새 저장소 초기화를 건너뛰었습니다.');
@@ -177,6 +218,7 @@ export function createProject({
   projectName,
   template,
   packageManager,
+  storybookAiReview = false,
   install = true,
   git = true,
 }) {
@@ -198,6 +240,9 @@ export function createProject({
     });
 
     normalizeGeneratedProject(targetDir);
+    if (storybookAiReview) {
+      configureStorybookAiReview(targetDir);
+    }
 
     if (install) {
       installDependencies(targetDir, packageManager, warnings);
