@@ -15,6 +15,13 @@ function parseJson(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function createStore(projectRoot) {
   const directory = path.join(projectRoot, DB_DIRECTORY);
   mkdirSync(directory, { recursive: true });
@@ -115,8 +122,12 @@ export function createStore(projectRoot) {
     CREATE INDEX IF NOT EXISTS idx_review_comment_story ON review_comment(story_id, created_at);
   `);
 
+  ensureColumn(db, "ai_history", "targets_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "ai_history", "snapshots_json", "TEXT NOT NULL DEFAULT '[]'");
+
   const recover = db.transaction(() => {
     db.prepare("DELETE FROM ai_file_lock").run();
+    db.prepare("UPDATE ai_job_target SET lock_status = 'pending' WHERE lock_status = 'locked'").run();
     db.prepare(`UPDATE ai_job
       SET status = 'queued', started_at = NULL, completed_at = NULL,
           error = 'Bridge restarted while this job was running; queued for retry',
@@ -137,22 +148,28 @@ export function createStore(projectRoot) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   function insertJob(job, randomId) {
+    const targets = Array.isArray(job.payload.targets) && job.payload.targets.length
+      ? job.payload.targets
+      : [{ fileName: job.payload.targetFile, absoluteFileName: job.payload.absoluteTargetFile }];
+
     const tx = db.transaction(() => {
       insertJobStmt.run(
         job.id,
         job.payload.storyId,
         job.payload.projectRoot,
-        job.payload.targetFile,
-        job.payload.absoluteTargetFile,
+        targets[0].fileName,
+        targets[0].absoluteFileName,
         job.prompt,
         JSON.stringify(job.payload),
         job.createdAt,
       );
-      insertTargetStmt.run(randomId(), job.id, job.payload.targetFile, job.payload.absoluteTargetFile);
+      for (const target of targets) {
+        insertTargetStmt.run(randomId(), job.id, target.fileName, target.absoluteFileName);
+      }
       for (const comment of job.payload.comments) {
         insertCommentStmt.run(
           randomId(), job.id, comment.id, comment.storyId, comment.comment,
-          comment.target?.selector ?? null,
+          comment.target?.source?.fileName ?? null,
           comment.target?.selector ?? null,
           comment.target?.lineNumber ?? null,
           JSON.stringify(comment.target ?? {}),
@@ -163,12 +180,18 @@ export function createStore(projectRoot) {
     tx();
   }
 
+  function listTargets(jobId) {
+    return db.prepare(`SELECT file_path AS fileName, absolute_file_path AS absoluteFileName,
+      lock_status AS lockStatus FROM ai_job_target WHERE job_id = ? ORDER BY rowid`).all(jobId);
+  }
+
   function rowToJob(row) {
     if (!row) return null;
     return {
       id: row.id,
       storyId: row.story_id,
       targetFile: row.target_file,
+      targets: listTargets(row.id),
       status: row.status,
       queuePosition: row.queue_position,
       projectRoot: row.project_root,
@@ -244,25 +267,43 @@ export function createStore(projectRoot) {
     tx();
   }
 
-  function acquireLock(filePath, ownerId, lockedAt) {
+  function acquireLocks(filePaths, ownerId, lockedAt) {
+    const unique = [...new Set(filePaths)].sort();
     const tx = db.transaction(() => {
-      const owner = db.prepare("SELECT job_id FROM ai_file_lock WHERE file_path = ?").get(filePath);
-      if (owner && owner.job_id !== ownerId) return { acquired: false, owner: owner.job_id };
-      db.prepare(`INSERT INTO ai_file_lock(file_path, job_id, locked_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(file_path) DO UPDATE SET job_id = excluded.job_id, locked_at = excluded.locked_at`).run(filePath, ownerId, lockedAt);
-      db.prepare("UPDATE ai_job_target SET lock_status = 'locked' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
-      return { acquired: true, owner: ownerId };
+      for (const filePath of unique) {
+        const owner = db.prepare("SELECT job_id FROM ai_file_lock WHERE file_path = ?").get(filePath);
+        if (owner && owner.job_id !== ownerId) {
+          return { acquired: false, owner: owner.job_id, blockedFile: filePath };
+        }
+      }
+      for (const filePath of unique) {
+        db.prepare(`INSERT INTO ai_file_lock(file_path, job_id, locked_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(file_path) DO UPDATE SET job_id = excluded.job_id, locked_at = excluded.locked_at`).run(filePath, ownerId, lockedAt);
+        db.prepare("UPDATE ai_job_target SET lock_status = 'locked' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
+      }
+      return { acquired: true, owner: ownerId, files: unique };
     });
     return tx();
   }
 
-  function releaseLock(filePath, ownerId) {
+  function releaseLocks(filePaths, ownerId) {
+    const unique = [...new Set(filePaths)];
     const tx = db.transaction(() => {
-      db.prepare("DELETE FROM ai_file_lock WHERE file_path = ? AND job_id = ?").run(filePath, ownerId);
-      db.prepare("UPDATE ai_job_target SET lock_status = 'released' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
+      for (const filePath of unique) {
+        db.prepare("DELETE FROM ai_file_lock WHERE file_path = ? AND job_id = ?").run(filePath, ownerId);
+        db.prepare("UPDATE ai_job_target SET lock_status = 'released' WHERE job_id = ? AND absolute_file_path = ?").run(ownerId, filePath);
+      }
     });
     tx();
+  }
+
+  function acquireLock(filePath, ownerId, lockedAt) {
+    return acquireLocks([filePath], ownerId, lockedAt);
+  }
+
+  function releaseLock(filePath, ownerId) {
+    releaseLocks([filePath], ownerId);
   }
 
   function listLocks() {
@@ -278,11 +319,14 @@ export function createStore(projectRoot) {
   }
 
   function saveHistory(entry) {
+    const targets = entry.targets ?? [];
+    const snapshots = entry.snapshots ?? [];
     db.prepare(`INSERT INTO ai_history (
       id, job_id, created_at, project_root, story_id, target_file, absolute_target_file,
       status, prompt, comments_json, before_content, after_content, result_json,
-      cache_cleared_json, rolled_back_at, rollback_forced, rollback_cache_cleared_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_cleared_json, rolled_back_at, rollback_forced, rollback_cache_cleared_json,
+      targets_json, snapshots_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       status = excluded.status,
       before_content = excluded.before_content,
@@ -291,7 +335,9 @@ export function createStore(projectRoot) {
       cache_cleared_json = excluded.cache_cleared_json,
       rolled_back_at = excluded.rolled_back_at,
       rollback_forced = excluded.rollback_forced,
-      rollback_cache_cleared_json = excluded.rollback_cache_cleared_json`).run(
+      rollback_cache_cleared_json = excluded.rollback_cache_cleared_json,
+      targets_json = excluded.targets_json,
+      snapshots_json = excluded.snapshots_json`).run(
       entry.id,
       entry.jobId ?? null,
       entry.createdAt,
@@ -302,18 +348,22 @@ export function createStore(projectRoot) {
       entry.status,
       entry.prompt,
       json(entry.comments, []),
-      entry.beforeContent ?? null,
-      entry.afterContent ?? null,
+      entry.beforeContent ?? snapshots[0]?.beforeContent ?? null,
+      entry.afterContent ?? snapshots[0]?.afterContent ?? null,
       json(entry.result),
       json(entry.cacheCleared, []),
       entry.rolledBackAt ?? null,
       entry.rollbackForced ? 1 : 0,
       json(entry.rollbackCacheCleared, []),
+      json(targets, []),
+      json(snapshots, []),
     );
   }
 
   function rowToHistory(row) {
     if (!row) return null;
+    const targets = parseJson(row.targets_json, []);
+    const snapshots = parseJson(row.snapshots_json, []);
     return {
       id: row.id,
       jobId: row.job_id,
@@ -322,6 +372,8 @@ export function createStore(projectRoot) {
       storyId: row.story_id,
       targetFile: row.target_file,
       absoluteTargetFile: row.absolute_target_file,
+      targets,
+      snapshots,
       status: row.status,
       prompt: row.prompt,
       comments: parseJson(row.comments_json, []),
@@ -377,11 +429,14 @@ export function createStore(projectRoot) {
     getJob,
     updateJob,
     listJobs,
+    listTargets,
     listQueuedStories,
     listQueuedJobs,
     refreshQueuePositions,
     acquireLock,
     releaseLock,
+    acquireLocks,
+    releaseLocks,
     listLocks,
     deleteJob,
     saveHistory,
