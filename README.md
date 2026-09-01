@@ -17,6 +17,74 @@ npx github:hwangilyong/create_hiy_front
 
 대화형 실행 시 프로젝트/지도/package manager와 함께 Storybook AI Review addon 포함 여부를 선택할 수 있습니다.
 
+## 기존 React 프로젝트에 OpenLayers 추가
+
+처음에는 일반 React 프로젝트로 시작했다가 나중에 지도 기능이 필요해진 경우 프로젝트를 다시 만들 필요 없이 현재 프로젝트 루트에서 OpenLayers 모듈을 후설치할 수 있습니다.
+
+```bash
+cd my-app
+npx github:hwangilyong/create_hiy_front add openlayers
+```
+
+이 명령은 현재 디렉터리의 `package.json`에서 React 프로젝트인지 확인한 뒤 `react_ol_init`의 OpenLayers 아키텍처를 가져와 다음 경로에 추가합니다.
+
+```text
+src/shared/lib/ol/
+├─ cache/
+├─ collections/
+├─ context-menus/
+├─ controllers/
+├─ core/
+├─ events/
+├─ features/
+├─ interactions/
+├─ layers/
+├─ overlays/
+├─ react/
+├─ sources/
+└─ index.ts
+```
+
+함께 추가되는 핵심 dependency는 `ol`과 `ol-contextmenu`입니다. package manager는 `packageManager` 필드와 lockfile을 기준으로 자동 감지하며 필요하면 직접 지정할 수 있습니다.
+
+```bash
+npx github:hwangilyong/create_hiy_front add openlayers --package-manager pnpm
+```
+
+의존성 설치를 나중에 하고 싶다면:
+
+```bash
+npx github:hwangilyong/create_hiy_front add openlayers --skip-install
+```
+
+지도 동작을 바로 확인할 `MapWorkbench` 예제까지 같이 추가하려면:
+
+```bash
+npx github:hwangilyong/create_hiy_front add openlayers --with-example
+```
+
+`--with-example`은 `src/widgets/map-workbench/`를 추가하며 SCSS 예제를 위해 `sass`도 필요한 경우 자동으로 추가합니다.
+
+후설치 작업은 기존 파일을 강제로 덮어쓰지 않습니다. 같은 경로에 파일이 이미 존재하면 해당 파일은 `skipped` 처리하고 없는 파일만 추가하므로 같은 명령을 다시 실행해도 기존 프로젝트 코드를 보호합니다. OpenLayers 관련 문서는 `docs/openlayers/` 아래에도 함께 추가됩니다.
+
+기본 사용 예시는 다음과 같습니다.
+
+```tsx
+import { OlMap, type MapController } from './shared/lib/ol';
+
+export function MapPage() {
+  const handleReady = (controller: MapController | null) => {
+    if (!controller) return;
+    controller.addDemoPoints();
+    controller.fitFeatures();
+  };
+
+  return <OlMap onControllerReady={handleReady} className="map-container" />;
+}
+```
+
+즉 신규 프로젝트에서는 `--map openlayers`로 처음부터 GIS 템플릿을 선택할 수 있고, 일반 React로 시작한 프로젝트에서는 `add openlayers`로 나중에 같은 핵심 OL 구조를 추가할 수 있습니다.
+
 ## Storybook AI Review
 
 `hwangilyong/storybook_addon`을 생성 프로젝트에 선택적으로 주입할 수 있습니다.
@@ -122,8 +190,14 @@ src/ai-review-demo/
 # 일반 React
 npx github:hwangilyong/create_hiy_front my-app --map none
 
-# React + OpenLayers
+# React + OpenLayers로 새 프로젝트 생성
 npx github:hwangilyong/create_hiy_front gis-app --map openlayers
+
+# 기존 React 프로젝트에 OpenLayers 후설치
+npx github:hwangilyong/create_hiy_front add openlayers
+
+# OpenLayers + 확인용 MapWorkbench 예제 후설치
+npx github:hwangilyong/create_hiy_front add openlayers --with-example
 
 # Storybook AI Review 포함
 npx github:hwangilyong/create_hiy_front my-app --storybook-ai-review
@@ -145,19 +219,25 @@ npx github:hwangilyong/create_hiy_front gis-app \
 ## 옵션
 
 ```text
---template <react|react-ol>       사용할 템플릿을 직접 선택
---map <none|openlayers>           지도 사용 여부로 템플릿 선택
---package-manager <name>          npm | pnpm | yarn | bun
---storybook-ai-review             Storybook AI Review addon 포함
---storybook-ai-review-demo        AI Review addon + 확인용 Demo Story 포함
---no-storybook-ai-review          Storybook AI Review addon 제외
---skip-install                    의존성 설치 생략
---git                             Git 저장소 초기화
---no-git                          Git 저장소 초기화 생략
--y, --yes                         질문 없이 기본값 사용
---list                            등록된 템플릿 목록 출력
--v, --version                     버전 출력
--h, --help                        도움말 출력
+create-hiy-front [project-name]
+  --template <react|react-ol>       사용할 템플릿을 직접 선택
+  --map <none|openlayers>           지도 사용 여부로 템플릿 선택
+  --package-manager <name>          npm | pnpm | yarn | bun
+  --storybook-ai-review             Storybook AI Review addon 포함
+  --storybook-ai-review-demo        AI Review addon + 확인용 Demo Story 포함
+  --no-storybook-ai-review          Storybook AI Review addon 제외
+  --skip-install                    의존성 설치 생략
+  --git                             Git 저장소 초기화
+  --no-git                          Git 저장소 초기화 생략
+  -y, --yes                         질문 없이 기본값 사용
+  --list                            등록된 템플릿 목록 출력
+  -v, --version                     버전 출력
+  -h, --help                        도움말 출력
+
+create-hiy-front add openlayers
+  --package-manager <name>          npm | pnpm | yarn | bun
+  --skip-install                    의존성 install 생략
+  --with-example                    MapWorkbench 샘플 추가
 ```
 
 `--yes`만 사용하면 Storybook AI Review는 기본적으로 비활성화됩니다. 필요한 경우 `--yes --storybook-ai-review` 또는 `--yes --storybook-ai-review-demo`로 명시해서 사용할 수 있습니다.
@@ -188,6 +268,15 @@ create_hiy_front
   -> .env.example이 있으면 .env.local 생성
   -> 선택한 package manager로 install
   -> 선택 시 git init
+
+create-hiy-front add openlayers
+  -> 현재 React 프로젝트 검증
+  -> react_ol_init shallow clone
+  -> ol / ol-contextmenu dependency 병합
+  -> src/shared/lib/ol의 없는 파일만 추가
+  -> OpenLayers docs 추가
+  -> 선택 시 MapWorkbench 예제 추가
+  -> 선택한 package manager로 install
 ```
 
 ## 개발
