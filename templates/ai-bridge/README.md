@@ -86,11 +86,16 @@ npm run ai-bridge
 
 ## Storybook addon과 연동
 
-`storybook_addon`(`@hiy/storybook-addon-ai-review`)의 "Send to AI"는 현재 `storyId`/`comments`/`instruction`만 전송하고 `targetFile`은 보내지 않는다(DOM→소스 자동 매핑은 addon의 다음 단계 항목). 그래서 지금은 아래 순서로 테스트한다.
+`storybook_addon`(`@hiy/storybook-addon-ai-review`)의 "Send to AI"는 클릭한 요소의 React Fiber에서
+dev 모드가 기록해 둔 `_debugSource`(파일 경로/라인)를 읽어 `targetFile`을 자동으로 채워 보낸다.
+`.env.local`에 `VITE_HIY_AI_REVIEW_ENDPOINT=http://127.0.0.1:4700/review`만 설정해 두면, Storybook의
+AI Review 패널에서 요소를 클릭하고 코멘트를 남긴 뒤 `Send to AI`를 누르는 것만으로 끝난다("Selected
+element" 아래에 감지된 파일:라인이 표시된다).
 
-1. `.env.local`에 `VITE_HIY_AI_REVIEW_ENDPOINT=http://127.0.0.1:4700/review`를 설정한다.
-2. Storybook의 AI Review 패널에서 `Copy AI context`로 payload를 복사한다.
-3. 복사한 JSON에 `targetFile`(과 필요하면 `projectRoot`)을 추가해 `curl`로 위 엔드포인트에 보낸다.
+production 빌드된 React나 예외적인 렌더 경로에서는 소스 위치 감지가 실패할 수 있다. 이 경우 패널의
+`Send to AI`가 "Could not detect a source file..." 메시지를 보여주며 전송을 막는다 — 이때는
+`Copy AI context`로 payload를 복사해 `targetFile`(과 필요하면 `projectRoot`)을 직접 채워
+`curl`로 위 엔드포인트에 보낸다.
 
 ## API 요약
 
