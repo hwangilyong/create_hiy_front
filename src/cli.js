@@ -1,4 +1,5 @@
 import { parseArgs, resolveTemplateFromArgs } from './args.js';
+import { addOpenLayers, parseAddCommand } from './add-feature.js';
 import { createPrompter } from './prompts.js';
 import { createProject } from './scaffold.js';
 import { getTemplateByMap, listTemplates } from './templates.js';
@@ -7,7 +8,7 @@ const VERSION = '0.2.0';
 const PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'];
 
 function printHelp() {
-  console.log(`create-hiy-front ${VERSION}\n\nUsage:\n  create-hiy-front [project-name] [options]\n\nOptions:\n  --template <react|react-ol>       사용할 템플릿을 직접 선택\n  --map <none|openlayers>           지도 사용 여부로 템플릿 선택\n  --package-manager <name>          npm | pnpm | yarn | bun\n  --storybook-ai-review             Storybook AI Review addon 포함\n  --storybook-ai-review-demo        AI Review addon + 확인용 샘플 Story 포함\n  --no-storybook-ai-review          Storybook AI Review addon 제외\n  --no-storybook-ai-review-demo     AI Review 샘플 Story 제외\n  --skip-install                    의존성 설치 생략\n  --git                             Git 저장소 초기화\n  --no-git                          Git 저장소 초기화 생략\n  -y, --yes                         질문 없이 기본값 사용\n  --list                            등록된 템플릿 목록 출력\n  -v, --version                     버전 출력\n  -h, --help                        도움말 출력\n\nExamples:\n  create-hiy-front\n  create-hiy-front my-app --map none\n  create-hiy-front gis-app --map openlayers --package-manager pnpm\n  create-hiy-front my-app --storybook-ai-review-demo\n`);
+  console.log(`create-hiy-front ${VERSION}\n\nUsage:\n  create-hiy-front [project-name] [options]\n  create-hiy-front add openlayers [options]\n\nAdd options:\n  --package-manager <name>          npm | pnpm | yarn | bun\n  --skip-install                    package.json만 갱신하고 install 생략\n  --with-example                    MapWorkbench 예제까지 추가\n\nOptions:\n  --template <react|react-ol>       사용할 템플릿을 직접 선택\n  --map <none|openlayers>           지도 사용 여부로 템플릿 선택\n  --package-manager <name>          npm | pnpm | yarn | bun\n  --storybook-ai-review             Storybook AI Review addon 포함\n  --storybook-ai-review-demo        AI Review addon + 확인용 샘플 Story 포함\n  --no-storybook-ai-review          Storybook AI Review addon 제외\n  --no-storybook-ai-review-demo     AI Review 샘플 Story 제외\n  --skip-install                    의존성 설치 생략\n  --git                             Git 저장소 초기화\n  --no-git                          Git 저장소 초기화 생략\n  -y, --yes                         질문 없이 기본값 사용\n  --list                            등록된 템플릿 목록 출력\n  -v, --version                     버전 출력\n  -h, --help                        도움말 출력\n\nExamples:\n  create-hiy-front\n  create-hiy-front my-app --map none\n  create-hiy-front gis-app --map openlayers --package-manager pnpm\n  create-hiy-front my-app --storybook-ai-review-demo\n  create-hiy-front add openlayers\n  create-hiy-front add openlayers --with-example\n`);
 }
 
 function printTemplates() {
@@ -30,7 +31,35 @@ function packageManagerChoices() {
   return PACKAGE_MANAGERS.map((name) => ({ label: name, value: name }));
 }
 
+function runAddCommand(argv) {
+  const add = parseAddCommand(argv);
+  if (!add) return false;
+  const result = addOpenLayers({
+    packageManager: add.packageManager,
+    install: !add.skipInstall,
+    withExample: add.withExample,
+  });
+
+  console.log('\n✓ OpenLayers 기능 추가 완료');
+  console.log(`  Project:      ${result.projectRoot}`);
+  console.log(`  Package:      ${result.packageManager}`);
+  console.log(`  Files added:  ${result.created.length}`);
+  console.log(`  Files skipped:${result.skipped.length}`);
+  console.log(`  Dependencies: ${result.dependenciesAdded.length ? result.dependenciesAdded.join(', ') : 'already installed'}`);
+  if (add.skipInstall) console.log(`\n의존성 설치는 생략했습니다. ${result.packageManager} install을 실행해주세요.`);
+  for (const warning of result.warnings) console.log(`- ${warning}`);
+  console.log('\n사용 예:');
+  console.log(`  import { OlMap, MapController } from './src/shared/lib/ol';`);
+  if (add.withExample) console.log('  src/widgets/map-workbench 에 확인용 예제가 추가되었습니다.');
+  return true;
+}
+
 export async function runCli(argv) {
+  if (argv[0] === 'add') {
+    runAddCommand(argv);
+    return;
+  }
+
   const args = parseArgs(argv);
   if (args.help) { printHelp(); return; }
   if (args.version) { console.log(VERSION); return; }
