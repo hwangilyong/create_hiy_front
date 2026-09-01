@@ -1,0 +1,28 @@
+{
+  "storyId": "button--primary",
+  "targetFile": "src/shared/ui/Button.tsx",
+  "comments": [
+    {
+      "id": "review-comment-1",
+      "storyId": "button--primary",
+      "comment": "버튼 높이를 40px로 줄여줘",
+      "createdAt": "2026-09-01T00:00:00.000Z",
+      "target": {
+        "storyId": "button--primary",
+        "selector": "button:nth-of-type(1)",
+        "tagName": "button",
+        "text": "Submit",
+        "rect": {
+          "x": 100,
+          "y": 80,
+          "width": 120,
+          "height": 48
+        },
+        "attributes": {
+          "class": "primary"
+        }
+      }
+    }
+  ],
+  "instruction": "Apply the visual review comments to the target component while preserving the existing design conventions."
+}

@@ -29,18 +29,20 @@ npx github:hwangilyong/create_hiy_front my-app --storybook-ai-review
 
 - `storybook`, `@storybook/react-vite` dev dependency
 - `@hiy/storybook-addon-ai-review` GitHub dependency
-- `storybook`, `build-storybook` scripts
+- `storybook`, `build-storybook`, `ai-bridge` scripts
 - `.storybook/main.ts`
 - `.storybook/preview.ts`
-- `.env.example`의 `VITE_HIY_AI_REVIEW_ENDPOINT`
+- `.env.example`/`.env.local`의 `VITE_HIY_AI_REVIEW_ENDPOINT` (기본값 `http://127.0.0.1:4700/review`)
+- `tools/ai-bridge/` — review payload를 받아 CLI 코딩 에이전트를 실행하는 로컬 브리지 서버 (자세한 내용은 생성된 프로젝트의 `tools/ai-bridge/README.md` 참고)
 
 실행:
 
 ```bash
-npm run storybook
+npm run storybook      # http://localhost:6006
+npm run ai-bridge       # http://127.0.0.1:4700, 기본은 dry-run
 ```
 
-Storybook toolbar의 `AI Review`를 켠 뒤 Canvas의 요소를 클릭하면 selector, text, attributes, bounding box가 수집되고 panel에서 코멘트를 달 수 있습니다. 코멘트는 AI context JSON으로 복사하거나 `VITE_HIY_AI_REVIEW_ENDPOINT`에 지정한 AI bridge로 전송할 수 있습니다.
+Storybook toolbar의 `AI Review`를 켠 뒤 Canvas의 요소를 클릭하면 selector, text, attributes, bounding box가 수집되고 panel에서 코멘트를 달 수 있습니다. 코멘트는 AI context JSON으로 복사하거나 `VITE_HIY_AI_REVIEW_ENDPOINT`에 지정한 `ai-bridge`로 전송할 수 있습니다. `ai-bridge`가 실제로 파일을 수정하게 하려면 `AI_BRIDGE_EXECUTE=1`과 `AI_EDIT_COMMAND`를 설정해야 합니다 — 자세한 내용과 안전장치는 `tools/ai-bridge/README.md`에 있습니다.
 
 현재 addon 저장소가 private이므로 생성 프로젝트에서 의존성을 설치할 때 해당 저장소에 접근 가능한 GitHub 인증이 필요합니다.
 
@@ -106,9 +108,9 @@ create_hiy_front
   -> .git 제거
   -> 새 프로젝트 폴더로 복사
   -> package.json name 재설정
-  -> 선택 시 Storybook AI Review 설정 주입
   -> 기존 lockfile 제거
-  -> .env.example이 있으면 .env.local 생성
+  -> 선택 시 Storybook AI Review 설정 + tools/ai-bridge 주입
+  -> .env.example이 있으면 .env.local 생성 (주입된 내용까지 반영)
   -> 선택한 package manager로 install
   -> 선택 시 git init
 ```
