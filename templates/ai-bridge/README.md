@@ -18,12 +18,19 @@ npm run ai-bridge
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `AI_EDIT_COMMAND` | 미설정 | 실행 파일과 인자 템플릿. `{cwd}`와 `{prompt}` placeholder를 지원한다. |
+| `AI_EDIT_COMMAND` | 미설정 | 기본 실행 파일과 인자 템플릿. `{cwd}`와 `{prompt}` placeholder를 지원한다. |
+| `AI_EDIT_COMMAND_CODEX` | 미설정 | Storybook 패널에서 `agent: "codex"`를 선택했을 때 쓸 명령. 없으면 `AI_EDIT_COMMAND`로 대체된다. |
+| `AI_EDIT_COMMAND_CLAUDE` | 미설정 | `agent: "claude"`를 선택했을 때 쓸 명령. 없으면 `AI_EDIT_COMMAND`로 대체된다. |
 | `AI_BRIDGE_EXECUTE` | 미설정 | 정확히 `1`일 때만 CLI를 실제 실행한다. 그 외에는 항상 dry-run이다. |
 | `AI_BRIDGE_HOST` | `127.0.0.1` | 서버가 바인딩할 호스트다. |
 | `AI_BRIDGE_PORT` | `4700` | 서버 포트다. |
 
-`AI_EDIT_COMMAND`는 다음 두 형식 중 하나로 설정한다.
+Storybook addon의 AI Review 패널에는 `CLI` 선택 드롭다운(Server default / Codex / Claude Code)이 있고,
+선택값이 요청의 `agent` 필드로 전달된다. `AI_EDIT_COMMAND_CODEX`/`AI_EDIT_COMMAND_CLAUDE`를 각각
+설정해 두면 패널에서 리뷰어가 요청마다 CLI를 바꿔가며 테스트할 수 있다. `GET /health`의 `agents` 필드로
+어떤 CLI가 설정돼 있는지 확인할 수 있고, 패널의 select에도 설정 안 된 옵션은 "(not configured)"로 표시된다.
+
+각 변수는 다음 두 형식 중 하나로 설정한다.
 
 ```bash
 # 공백과 따옴표를 인식하는 간단한 command 형식
@@ -77,6 +84,15 @@ Claude Code에서 프롬프트를 stdin으로 보내는 예시:
 ```bash
 AI_BRIDGE_EXECUTE=1 \
 AI_EDIT_COMMAND='claude -p' \
+npm run ai-bridge
+```
+
+패널에서 Codex/Claude Code를 바꿔가며 테스트하려면 둘 다 설정한다:
+
+```bash
+AI_BRIDGE_EXECUTE=1 \
+AI_EDIT_COMMAND_CODEX='codex exec --cd {cwd} {prompt}' \
+AI_EDIT_COMMAND_CLAUDE='claude -p' \
 npm run ai-bridge
 ```
 

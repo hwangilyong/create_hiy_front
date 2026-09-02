@@ -15,7 +15,19 @@ const BUNDLED_PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta
 const host = process.env.AI_BRIDGE_HOST || DEFAULT_HOST;
 const port = parsePort(process.env.AI_BRIDGE_PORT);
 const executeEnabled = process.env.AI_BRIDGE_EXECUTE === "1";
-const commandTemplate = parseCommandTemplate(process.env.AI_EDIT_COMMAND);
+// The Storybook panel lets the reviewer pick which CLI agent runs the edit.
+// AI_EDIT_COMMAND stays as the fallback/default; AI_EDIT_COMMAND_<AGENT> lets
+// each named agent have its own command. Add more by setting more env vars —
+// no code change needed as long as the panel sends a matching `agent` value.
+const commandTemplates = {
+  default: parseCommandTemplate(process.env.AI_EDIT_COMMAND),
+  codex: parseCommandTemplate(process.env.AI_EDIT_COMMAND_CODEX),
+  claude: parseCommandTemplate(process.env.AI_EDIT_COMMAND_CLAUDE),
+};
+function resolveCommandTemplate(agent) {
+  if (agent && Object.hasOwn(commandTemplates, agent) && commandTemplates[agent]) return commandTemplates[agent];
+  return commandTemplates.default;
+}
 const store = createStore(BUNDLED_PROJECT_ROOT);
 const drainingStories = new Set();
 
@@ -163,6 +175,7 @@ function normalizePayload(value) {
     targets,
     targetFile: targets[0].fileName,
     absoluteTargetFile: targets[0].absoluteFileName,
+    agent: typeof value.agent === "string" && value.agent.trim() ? value.agent.trim().toLowerCase() : null,
   };
 }
 
@@ -283,6 +296,7 @@ function publicJob(job) {
     targetFile: job.targetFile,
     targets: job.targets ?? [],
     targetCount: job.targets?.length ?? 1,
+    agent: job.payload?.agent ?? null,
     status: job.status,
     queuePosition: job.queuePosition ?? 0,
     createdAt: job.createdAt,
@@ -334,7 +348,7 @@ async function executeJob(job) {
         beforeContent: await readFile(target.absoluteFileName, "utf8"),
         afterContent: null,
       })));
-      const execution = createExecutionPlan(commandTemplate, realProjectRoot, prompt);
+      const execution = createExecutionPlan(resolveCommandTemplate(payload.agent), realProjectRoot, prompt);
       const result = await runCommand(execution, prompt);
       for (const snapshot of snapshots) {
         try { snapshot.afterContent = await readFile(snapshot.absoluteFileName, "utf8"); }
@@ -468,7 +482,7 @@ async function handleReview(request, response) {
   const payload = normalizePayload(await readJsonBody(request));
   const prompt = buildPrompt(payload);
   if (!executeEnabled) {
-    const execution = createExecutionPlan(commandTemplate, payload.projectRoot, prompt);
+    const execution = createExecutionPlan(resolveCommandTemplate(payload.agent), payload.projectRoot, prompt);
     const historyId = randomUUID();
     store.saveHistory({
       id: historyId,
@@ -488,11 +502,15 @@ async function handleReview(request, response) {
     sendJson(response, 202, { ok: true, mode: "dry-run", status: "accepted", historyId, storyId: payload.storyId, targetFile: payload.targetFile, targets: payload.targets, targetCount: payload.targets.length, execution });
     return;
   }
-  if (commandTemplate === null) throw new HttpError(503, "AI_EDIT_COMMAND must be configured when AI_BRIDGE_EXECUTE=1");
+  if (resolveCommandTemplate(payload.agent) === null) {
+    throw new HttpError(503, payload.agent
+      ? `No command configured for agent "${payload.agent}" (set AI_EDIT_COMMAND_${payload.agent.toUpperCase()} or AI_EDIT_COMMAND)`
+      : "AI_EDIT_COMMAND must be configured when AI_BRIDGE_EXECUTE=1");
+  }
   await validateExecutionTargets(payload);
   const job = enqueueReview(payload, prompt);
-  logEvent("review.queued", { jobId: job.id, storyId: job.storyId, targets: job.targets.map((item) => item.fileName), queuePosition: job.queuePosition });
-  sendJson(response, 202, { ok: true, mode: "execute", status: job.queuePosition > 0 ? "queued" : "running", jobId: job.id, storyId: job.storyId, targetFile: job.targetFile, targets: job.targets, targetCount: job.targets.length, queuePosition: job.queuePosition });
+  logEvent("review.queued", { jobId: job.id, storyId: job.storyId, agent: payload.agent, targets: job.targets.map((item) => item.fileName), queuePosition: job.queuePosition });
+  sendJson(response, 202, { ok: true, mode: "execute", status: job.queuePosition > 0 ? "queued" : "running", jobId: job.id, storyId: job.storyId, targetFile: job.targetFile, targets: job.targets, targetCount: job.targets.length, queuePosition: job.queuePosition, agent: payload.agent });
 }
 
 function handleHistory(response) { sendJson(response, 200, { ok: true, history: store.listHistory().map(historySummary) }); }
@@ -571,7 +589,7 @@ async function handleRequest(request, response) {
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   if (request.method === "GET" && requestUrl.pathname === "/health") {
-    sendJson(response, 200, { ok: true, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT, databasePath: store.databasePath, activeJobs: store.listJobs({ activeOnly: true }).length, activeStoryQueues: drainingStories.size, activeFileLocks: store.listLocks().length });
+    sendJson(response, 200, { ok: true, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplates.default !== null, agents: { default: commandTemplates.default !== null, codex: commandTemplates.codex !== null, claude: commandTemplates.claude !== null }, defaultProjectRoot: BUNDLED_PROJECT_ROOT, databasePath: store.databasePath, activeJobs: store.listJobs({ activeOnly: true }).length, activeStoryQueues: drainingStories.size, activeFileLocks: store.listLocks().length });
     return;
   }
   if (request.method === "GET" && requestUrl.pathname === "/history") { handleHistory(response); return; }
@@ -608,9 +626,10 @@ function resumePersistedQueues() {
 function startServer() {
   const server = createBridgeServer();
   server.once("error", (error) => { logEvent("server.error", { error: error.message }); process.exitCode = 1; });
+  const anyCommandConfigured = Object.values(commandTemplates).some((template) => template !== null);
   server.listen(port, host, () => {
-    logEvent("server.started", { address: `http://${host}:${port}`, mode: executeEnabled ? "execute" : "dry-run", commandConfigured: commandTemplate !== null, defaultProjectRoot: BUNDLED_PROJECT_ROOT, databasePath: store.databasePath });
-    if (executeEnabled && commandTemplate !== null) resumePersistedQueues();
+    logEvent("server.started", { address: `http://${host}:${port}`, mode: executeEnabled ? "execute" : "dry-run", agents: { default: commandTemplates.default !== null, codex: commandTemplates.codex !== null, claude: commandTemplates.claude !== null }, defaultProjectRoot: BUNDLED_PROJECT_ROOT, databasePath: store.databasePath });
+    if (executeEnabled && anyCommandConfigured) resumePersistedQueues();
   });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
     server.close(() => { store.close(); process.exit(0); });
